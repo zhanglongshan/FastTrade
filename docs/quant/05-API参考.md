@@ -109,7 +109,42 @@
 
 查询回测详情。失败记录的 `status=2`，原因在 `error` 字段。
 
-## 4. 权限码
+## 4. 实时策略接口（模拟盘/实盘）
+
+统一前缀 `/api/v1/quant/live`。模拟盘与实盘共用这些接口，以 `mode`（paper/live）区分执行器。完整字段与风险说明见 [06-模拟盘与实盘](./06-模拟盘与实盘.md)。
+
+| 方法 | 路径 | 说明 | 权限码 |
+| --- | --- | --- | --- |
+| POST | `/create` | 创建实例 | `module_quant:live:create` |
+| GET | `/list?mode=&limit=` | 实例列表（可按 paper/live 过滤） | `module_quant:live:query` |
+| GET | `/detail/{id}` | 实例详情（不含密钥明文） | `module_quant:live:query` |
+| PUT | `/update/{id}` | 更新费率/滑点/dry_run/密钥等 | `module_quant:live:update` |
+| POST | `/start/{id}` | 启动轮询 | `module_quant:live:start` |
+| POST | `/stop/{id}` | 停止轮询 | `module_quant:live:start` |
+| POST | `/tick/{id}` | 手动运行一次 | `module_quant:live:run` |
+| GET | `/trades/{id}` | 成交流水 | `module_quant:live:query` |
+| DELETE | `/delete/{id}` | 删除实例 | `module_quant:live:delete` |
+
+创建实例 `POST /create` 请求体关键字段：
+
+```json
+{
+  "name": "BTC-1h-SMA",
+  "mode": "paper",
+  "strategy_name": "SmaCrossStrategy",
+  "symbol": "BTC/USDT",
+  "interval": "1h",
+  "initial_cash": 10000,
+  "fee_rate": 0.001,
+  "slippage": 0,
+  "dry_run": true,
+  "allow_short": true
+}
+```
+
+`mode=live` 且 `dry_run=false` 时需额外提供 `api_key` 与 `api_secret`（加密存储，响应永不回传明文）。
+
+## 5. 权限码
 
 | 接口 | 权限码 |
 | --- | --- |
@@ -119,10 +154,11 @@
 | 策略查询 | `module_quant:strategy:query` |
 | 执行回测 | `module_quant:backtest:run` |
 | 回测查询 | `module_quant:backtest:query` |
+| 实时策略 | `module_quant:live:create/query/update/start/run/delete` |
 
 给普通角色授权时，在「系统管理 → 角色管理」勾选对应权限；超级管理员默认拥有全部权限。
 
-## 5. 调用示例
+## 6. 调用示例
 
 ```bash
 # 需要先获取登录 token
