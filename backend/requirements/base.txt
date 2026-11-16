@@ -26,7 +26,9 @@ python-multipart==0.0.32               # 表单解析
 redis==7.1.0                           # 缓存 / 会话
 rich==15.0.0                           # 终端输出美化
 sqlalchemy==2.0.51                     # ORM
-sqlglot[rs]==27.8.0                    # SQL 解析
+asyncpg==0.31.0                        # PostgreSQL 异步驱动（本项目默认数据库）
+psycopg[binary]==3.3.2                 # PostgreSQL 同步驱动（自带 libpq）
+sqlglot==27.8.0                        # SQL 解析（纯 Python，避免 Rust 扩展源码编译卡住）
 tinycss2==1.5.1                        # bleach 依赖
 typer==0.26.7                          # CLI 入口（main.py）
 ua-parser==1.0.2                       # UA 解析

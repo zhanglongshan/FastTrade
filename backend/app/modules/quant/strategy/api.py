@@ -282,15 +282,21 @@ class TradeAPI:
 
             qty = order.qty
             if order.side == "buy":
-                affordable = self.cash / (price * (1 + self.fee_rate))
-                qty = min(qty, affordable)
-            elif order.side == "buycover":
+                # 开多：受可用现金约束
                 affordable = self.cash / (price * (1 + self.fee_rate))
                 qty = min(qty, affordable)
             elif order.side == "sell":
+                # 平多：受多头持仓约束
                 qty = min(qty, self.long_qty)
-            else:
+            elif order.side == "buycover":
+                # 平空：受空头持仓与可用现金双重约束
                 qty = min(qty, self.short_qty)
+                affordable = self.cash / (price * (1 + self.fee_rate))
+                qty = min(qty, affordable)
+            else:
+                # sellshort 开空：不产生即时现金支出，且开空时 short_qty 尚为 0，
+                # 不能按现有空头持仓削减数量，否则永远无法建立首笔空单。
+                qty = max(qty, 0.0)
 
             if qty <= 1e-12:
                 self.log(f"可用资金或持仓不足，取消订单：{order.side}")

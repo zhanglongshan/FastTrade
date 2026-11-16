@@ -29,7 +29,7 @@ BINANCE_INTERVALS = {
 class QuantIntervalValidatorMixin(BaseModel):
     """周期校验混入类。"""
 
-    @field_validator("interval")
+    @field_validator("interval", check_fields=False)
     @classmethod
     def validate_interval(cls, value: str) -> str:
         """校验 K 线周期必须是币安支持的周期。"""
@@ -37,7 +37,7 @@ class QuantIntervalValidatorMixin(BaseModel):
             raise ValueError(f"不支持的 K 线周期 {value}，可选：{sorted(BINANCE_INTERVALS)}")
         return value
 
-    @field_validator("symbol")
+    @field_validator("symbol", check_fields=False)
     @classmethod
     def validate_symbol(cls, value: str) -> str:
         """校验并规范化交易对：BTC/USDT 与 BTCUSDT 均接受。"""

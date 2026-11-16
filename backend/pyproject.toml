@@ -26,7 +26,9 @@ dependencies = [
     "redis==7.1.0",                             # redis 异步操作数据库
     "rich==15.0.0",                             # 终端打印美化
     "sqlalchemy==2.0.51",                       # 数据库ORM
-    "sqlglot[rs]==27.8.0",                      # sql 解析
+    "asyncpg==0.31.0",                          # PostgreSQL 异步驱动（本项目默认数据库）
+    "psycopg[binary]==3.3.2",                   # PostgreSQL 同步驱动（自带 libpq）
+    "sqlglot==27.8.0",                          # sql 解析（纯 Python，避免 Rust 扩展源码编译卡住）
     "tinycss2==1.5.1",                          # bleach CSS 清洗依赖
     "typer==0.26.7",                            # 命令行工具
     "ua-parser==1.0.2",                         # 解析 User-Agent 获取 OS/浏览器
@@ -43,8 +45,9 @@ dependencies = [
     "cos-python-sdk-v5==1.9.44",
 ]
 
-# 数据库驱动按需安装：uv sync --extra mysql / --extra postgres / --extra sqlite
-# 默认（不指定 extra）只装核心依赖，启动时会提示缺少对应驱动
+# PostgreSQL 驱动已列入核心依赖（本项目 .env.dev 默认使用 fast_trade/postgres）。
+# 其他数据库的驱动按需安装：uv sync --extra mysql / --extra sqlite
+# 需同时支持三种库时用：uv sync --extra all-db
 [project.optional-dependencies]
 mysql = [
     "aiomysql>=0.2.0",                       # 异步驱动（ASYNC_DB_URI）
