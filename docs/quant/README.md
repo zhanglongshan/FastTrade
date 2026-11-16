@@ -16,15 +16,19 @@
 
 - PostgreSQL：数据库 `fast_trade`，用户 `postgres`，密码已在本地 `backend/env/.env.dev` 中配置（该文件已加入 `.gitignore`，**不要提交**）。
 - Redis：项目启动依赖 Redis，默认 `localhost:6379`，请先启动本机 Redis。
-- Python：≥ 3.12；推荐 `uv` 管理依赖。
+- Python：≥ 3.12（当前 `.python-version` 为 3.14，已验证可用）；推荐 `uv` 管理依赖。
+- PostgreSQL 驱动 `asyncpg` / `psycopg` 已列入核心依赖，`uv sync` 默认安装，无需再带 `--extra postgres`。
+- SQL 解析使用纯 Python 的 `sqlglot`，**不要改回 `sqlglot[rs]`**：其 Rust 扩展在 Python 3.14 下无预编译 wheel，会触发源码编译导致 `uv sync` 卡在 `Building sqlglotrs`。
 
 首次启动会自动建表并初始化基础数据；新增的 `quant_dataset`、`quant_backtest` 两张表会在 dev 环境由 Alembic 自动迁移生成。
 
 ```bash
 cd backend
-uv sync --extra postgres
+uv sync
 uv run main.py run --env=dev
 ```
+
+> 注意：`uv run` 默认会重新同步并修剪 optional extra。本项目所需驱动均已在核心依赖中，直接用 `uv run` 即可；若日后新增 extra 依赖，需用 `uv run --extra <name>` 或 `uv run --no-sync`。
 
 接口文档：<http://127.0.0.1:8001/docs>
 
