@@ -118,6 +118,126 @@ def backtest_command(
     _print_json(asyncio.run(_run()))
 
 
+@quant_cli.command("live-list", help="列出模拟盘/实盘策略实例")
+def live_list_command(
+    mode: Annotated[str | None, typer.Option("--mode", help="过滤模式：paper/live")] = None,
+    env: Annotated[str, typer.Option("--env", help="运行环境")] = "dev",
+) -> None:
+    """打印实时策略实例。"""
+    _setup_env(env)
+    from app.core.database import async_db_session
+    from app.modules.quant.runtime.service import list_live_strategies, to_out
+
+    async def _run() -> list[dict]:
+        """查询实例。"""
+        async with async_db_session() as db:
+            return [to_out(obj).model_dump(mode="json") for obj in await list_live_strategies(db, mode=mode)]
+
+    _print_json(asyncio.run(_run()))
+
+
+@quant_cli.command("live-create", help="创建模拟盘/实盘策略实例")
+def live_create_command(
+    name: Annotated[str, typer.Option("--name", help="实例名称")],
+    strategy: Annotated[str, typer.Option("--strategy", "-s", help="策略类名")],
+    symbol: Annotated[str, typer.Option("--symbol", help="交易对，如 BTC/USDT")],
+    interval: Annotated[str, typer.Option("--interval", "-i", help="周期，如 1h")],
+    mode: Annotated[str, typer.Option("--mode", help="paper-模拟盘/live-实盘")] = "paper",
+    cash: Annotated[float, typer.Option("--cash", help="初始资金")] = 10000.0,
+    dry_run: Annotated[bool, typer.Option("--dry-run/--no-dry-run", help="实盘是否模拟运行")] = True,
+    api_key: Annotated[str | None, typer.Option("--api-key", help="币安 API Key（实盘真实下单需要）")] = None,
+    api_secret: Annotated[str | None, typer.Option("--api-secret", help="币安 API Secret")] = None,
+    env: Annotated[str, typer.Option("--env", help="运行环境")] = "dev",
+) -> None:
+    """创建实时策略实例。"""
+    _setup_env(env)
+    from app.core.database import async_db_session
+    from app.modules.quant.runtime.service import create_live_strategy, to_out
+    from app.modules.quant.schema import QuantLiveStrategyCreateSchema
+
+    params = QuantLiveStrategyCreateSchema(
+        name=name,
+        mode=mode,
+        strategy_name=strategy,
+        symbol=symbol,
+        interval=interval,
+        initial_cash=cash,
+        dry_run=dry_run,
+        api_key=api_key,
+        api_secret=api_secret,
+    )
+
+    async def _run() -> dict:
+        """创建实例。"""
+        async with async_db_session() as db:
+            return to_out(await create_live_strategy(params, db=db)).model_dump(mode="json")
+
+    _print_json(asyncio.run(_run()))
+
+
+@quant_cli.command("live-tick", help="手动运行一次实时策略 tick")
+def live_tick_command(
+    strategy_id: Annotated[int, typer.Argument(help="实时策略实例ID")],
+    data_file: Annotated[str | None, typer.Option("--data-file", help="可选：用本地 CSV 驱动本次 tick（离线验证）")] = None,
+    env: Annotated[str, typer.Option("--env", help="运行环境")] = "dev",
+) -> None:
+    """运行一次 tick。"""
+    _setup_env(env)
+    from app.core.database import async_db_session
+    from app.modules.quant.runtime.service import run_strategy_tick
+
+    candles = None
+    if data_file:
+        from pathlib import Path
+
+        from app.modules.quant.backtest.engine import load_candles
+
+        candles = load_candles(Path(data_file))
+
+    async def _run() -> dict:
+        """执行 tick。"""
+        async with async_db_session() as db:
+            return (await run_strategy_tick(strategy_id, db=db, candles=candles)).to_dict()
+
+    _print_json(asyncio.run(_run()))
+
+
+@quant_cli.command("live-start", help="启动实时策略轮询")
+def live_start_command(
+    strategy_id: Annotated[int, typer.Argument(help="实时策略实例ID")],
+    env: Annotated[str, typer.Option("--env", help="运行环境")] = "dev",
+) -> None:
+    """启动实例。"""
+    _setup_env(env)
+    from app.core.database import async_db_session
+    from app.modules.quant.runtime.service import runtime_manager
+
+    async def _run() -> dict:
+        """启动实例。"""
+        async with async_db_session() as db:
+            await runtime_manager.start(strategy_id)
+        return {"strategy_id": strategy_id, "status": 1}
+
+    _print_json(asyncio.run(_run()))
+
+
+@quant_cli.command("live-stop", help="停止实时策略轮询")
+def live_stop_command(
+    strategy_id: Annotated[int, typer.Argument(help="实时策略实例ID")],
+    env: Annotated[str, typer.Option("--env", help="运行环境")] = "dev",
+) -> None:
+    """停止实例。"""
+    _setup_env(env)
+    from app.modules.quant.runtime.service import runtime_manager
+
+    async def _run() -> dict:
+        """停止实例。"""
+        await runtime_manager.stop(strategy_id)
+        return {"strategy_id": strategy_id, "status": 0}
+
+    _print_json(asyncio.run(_run()))
+
+
 @quant_cli.command("init-menu", help="幂等补入量化菜单到既有数据库（侧栏显示量化目录）")
 def init_menu_command(
     env: Annotated[str, typer.Option("--env", help="运行环境")] = "dev",

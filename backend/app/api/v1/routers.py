@@ -13,6 +13,7 @@ from app.modules.monitor.server.controller import ServerRouter
 from app.modules.ops.ssh.controller import SshRouter
 from app.modules.quant.backtest.controller import QuantBacktestRouter
 from app.modules.quant.data.controller import QuantDataRouter
+from app.modules.quant.runtime.controller import QuantLiveRouter
 from app.modules.quant.strategy.controller import QuantStrategyRouter
 from app.modules.system.auth.controller import AuthRouter
 from app.modules.system.dept.controller import DeptRouter
@@ -67,7 +68,7 @@ DOMAIN_CONTROLLERS: dict[str, list[APIRouter]] = {
     "/generator": [GenRouter],
     "/common": [FileRouter],
     "/ops": [SshRouter, DbConsoleRouter],
-    "/quant": [QuantDataRouter, QuantStrategyRouter, QuantBacktestRouter],
+    "/quant": [QuantDataRouter, QuantStrategyRouter, QuantBacktestRouter, QuantLiveRouter],
 }
 
 api_v1 = APIRouter()

@@ -136,3 +136,86 @@ class QuantBacktestOutSchema(BaseModel):
     started_time: DateTimeStr | None = Field(default=None, description="开始时间")
     finished_time: DateTimeStr | None = Field(default=None, description="结束时间")
     created_time: DateTimeStr | None = Field(default=None, description="创建时间")
+
+
+class QuantLiveStrategyCreateSchema(QuantIntervalValidatorMixin):
+    """创建实时策略实例参数（模拟盘/实盘共用）。"""
+
+    name: str = Field(min_length=1, max_length=150, description="实例名称")
+    mode: str = Field(default="paper", description="运行模式：paper-模拟盘，live-实盘")
+    strategy_name: str = Field(description="策略类名，必须与策略文件中的类名一致")
+    symbol: str = Field(description="交易对，如 BTC/USDT")
+    interval: str = Field(description="K线周期，如 1h")
+    initial_cash: float = Field(default=10000.0, gt=0, description="初始/虚拟资金")
+    fee_rate: float = Field(default=0.001, ge=0, le=0.1, description="单边手续费率")
+    slippage: float = Field(default=0.0, ge=0, le=0.1, description="滑点比例")
+    dry_run: bool = Field(default=True, description="实盘是否模拟运行，True 不下真实单")
+    allow_short: bool = Field(default=True, description="是否允许做空，实盘现货建议 False")
+    api_key: str | None = Field(default=None, description="币安 API Key（仅实盘真实下单需要，加密存储）")
+    api_secret: str | None = Field(default=None, description="币安 API Secret（仅实盘真实下单需要，加密存储）")
+    description: str | None = Field(default=None, description="备注")
+
+    @field_validator("mode")
+    @classmethod
+    def validate_mode(cls, value: str) -> str:
+        """校验运行模式取值。"""
+        if value not in {"paper", "live"}:
+            raise ValueError("mode 只能是 paper 或 live")
+        return value
+
+
+class QuantLiveStrategyUpdateSchema(BaseModel):
+    """更新实时策略实例参数（仅允许修改安全字段）。"""
+
+    name: str | None = Field(default=None, max_length=150, description="实例名称")
+    fee_rate: float | None = Field(default=None, ge=0, le=0.1, description="单边手续费率")
+    slippage: float | None = Field(default=None, ge=0, le=0.1, description="滑点比例")
+    dry_run: bool | None = Field(default=None, description="实盘是否模拟运行")
+    allow_short: bool | None = Field(default=None, description="是否允许做空")
+    api_key: str | None = Field(default=None, description="币安 API Key，留空表示不修改")
+    api_secret: str | None = Field(default=None, description="币安 API Secret，留空表示不修改")
+    description: str | None = Field(default=None, description="备注")
+
+
+class QuantLiveStrategyOutSchema(BaseModel):
+    """实时策略实例响应模型（永不返回密钥明文）。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int = Field(description="主键ID")
+    name: str = Field(description="实例名称")
+    mode: str = Field(description="运行模式：paper/live")
+    strategy_name: str = Field(description="策略类名")
+    symbol: str = Field(description="交易对")
+    interval: str = Field(description="K线周期")
+    initial_cash: float = Field(description="初始/虚拟资金")
+    fee_rate: float = Field(description="手续费率")
+    slippage: float = Field(description="滑点比例")
+    dry_run: bool = Field(description="是否模拟运行")
+    allow_short: bool = Field(description="是否允许做空")
+    status: int = Field(description="状态：0=停止，1=运行，2=异常")
+    account: dict[str, Any] | None = Field(default=None, description="账户账本快照")
+    has_api_key: bool = Field(default=False, description="是否已配置 API Key（不返回明文）")
+    last_result: dict[str, Any] | None = Field(default=None, description="最近一次 tick 结果")
+    last_error: str | None = Field(default=None, description="最近错误")
+    last_tick_time: DateTimeStr | None = Field(default=None, description="最近运行时间")
+    description: str | None = Field(default=None, description="备注")
+    created_time: DateTimeStr | None = Field(default=None, description="创建时间")
+
+
+class QuantTradeRecordOutSchema(BaseModel):
+    """实时成交流水响应模型。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int = Field(description="主键ID")
+    strategy_id: int = Field(description="实时策略实例ID")
+    mode: str = Field(description="运行模式：paper/live")
+    symbol: str = Field(description="交易对")
+    side: str = Field(description="方向")
+    qty: float = Field(description="成交数量")
+    price: float = Field(description="成交价格")
+    fee: float = Field(description="手续费")
+    pnl: float | None = Field(default=None, description="已实现盈亏")
+    reason: str | None = Field(default=None, description="触发原因")
+    trade_time: DateTimeStr | None = Field(default=None, description="成交时间")

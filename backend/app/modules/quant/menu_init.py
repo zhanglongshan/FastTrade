@@ -76,6 +76,42 @@ QUANT_MENU_TREE: list[dict] = [
                 "redirect": None,
                 "description": "策略回测配置与结果查看",
             },
+            {
+                "name": "量化-模拟盘",
+                "type": 2,
+                "icon": "ri:play-circle-line",
+                "order": 3,
+                "permission": "module_quant:live:query",
+                "route_name": "QuantPaper",
+                "route_path": "paper",
+                "component_path": "module_quant/paper/index",
+                "status": 0,
+                "keep_alive": True,
+                "hidden": False,
+                "always_show": False,
+                "title": "量化-模拟盘",
+                "affix": False,
+                "redirect": None,
+                "description": "虚拟资金实时策略验证",
+            },
+            {
+                "name": "量化-实盘",
+                "type": 2,
+                "icon": "ri:line-chart-line",
+                "order": 4,
+                "permission": "module_quant:live:query",
+                "route_name": "QuantLive",
+                "route_path": "live",
+                "component_path": "module_quant/live/index",
+                "status": 0,
+                "keep_alive": True,
+                "hidden": False,
+                "always_show": False,
+                "title": "量化-实盘",
+                "affix": False,
+                "redirect": None,
+                "description": "币安实盘交易（默认 dry-run）",
+            },
         ],
     }
 ]
@@ -107,14 +143,15 @@ async def ensure_quant_menus(db: AsyncSession) -> dict[str, int]:
         ).scalar_one_or_none()
 
         if existing:
-            skipped += 1 + len(children)
-            continue
+            skipped += 1
+            parent = existing
+        else:
+            parent = MenuModel(**payload)
+            db.add(parent)
+            await db.flush()
+            created += 1
 
-        parent = MenuModel(**payload)
-        db.add(parent)
-        await db.flush()
-        created += 1
-
+        # 无论父节点是新建还是已存在，都补齐缺失的子菜单
         for child in children:
             child_existing = (
                 await db.execute(

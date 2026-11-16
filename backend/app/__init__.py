@@ -40,6 +40,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[Any, Any]:
     await SchedulerUtil.init_scheduler(redis=app.state.redis)
     logger.info("✅ 定时任务调度器 初始化完成")
 
+    # 恢复量化实时策略（模拟盘/实盘）的运行中实例
+    try:
+        from app.modules.quant.runtime.service import runtime_manager
+
+        await runtime_manager.restore()
+    except Exception as exc:  # noqa: BLE001 - 实时策略恢复失败不应阻断应用启动
+        logger.warning(f"⚠️ 量化实时策略恢复失败（不影响主服务）：{exc}")
+
     console_start(
         host=settings.SERVER_HOST,
         port=settings.SERVER_PORT,
@@ -52,6 +60,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[Any, Any]:
 
     yield
 
+    try:
+        from app.modules.quant.runtime.service import runtime_manager
+
+        await runtime_manager.shutdown()
+        logger.info("✅ 量化实时策略调度已关闭")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"⚠️ 量化实时策略关闭异常：{exc}")
     try:
         await SchedulerUtil.shutdown(wait=True)
         logger.info("✅ 定时任务调度器已关闭")

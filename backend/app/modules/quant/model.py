@@ -44,3 +44,47 @@ class QuantBacktestModel(ModelMixin, UserMixin):
     started_time: Mapped[datetime | None] = mapped_column(nullable=True, comment="开始时间")
     finished_time: Mapped[datetime | None] = mapped_column(nullable=True, comment="结束时间")
     description: Mapped[str | None] = mapped_column(Text, nullable=True, default=None, comment="备注")
+
+
+class QuantLiveStrategyModel(ModelMixin, UserMixin):
+    """实时策略实例：模拟盘(paper)与实盘(live)共用，仅执行器不同。"""
+
+    __tablename__: str = "quant_live_strategy"
+    __table_args__: dict[str, str] = {"comment": "量化实时策略实例表"}
+
+    name: Mapped[str] = mapped_column(String(150), nullable=False, comment="实例名称")
+    mode: Mapped[str] = mapped_column(String(10), nullable=False, default="paper", comment="运行模式：paper-模拟盘，live-实盘")
+    strategy_name: Mapped[str] = mapped_column(String(150), nullable=False, comment="策略类名")
+    symbol: Mapped[str] = mapped_column(String(40), nullable=False, comment="交易对，如 BTC/USDT")
+    interval: Mapped[str] = mapped_column(String(10), nullable=False, comment="K线周期，如 1h")
+    initial_cash: Mapped[float] = mapped_column(Float, nullable=False, default=10000.0, comment="初始/虚拟资金")
+    fee_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.001, comment="单边手续费率")
+    slippage: Mapped[float] = mapped_column(Float, nullable=False, default=0.0, comment="滑点比例")
+    dry_run: Mapped[bool] = mapped_column(nullable=False, default=True, comment="实盘是否模拟运行：True 不下真实单")
+    allow_short: Mapped[bool] = mapped_column(nullable=False, default=True, comment="是否允许做空（实盘现货建议关闭）")
+    status: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="状态：0=停止，1=运行，2=异常")
+    account: Mapped[dict | None] = mapped_column(JSONType, nullable=True, default=None, comment="账户账本快照 JSON")
+    api_key: Mapped[str | None] = mapped_column(Text, nullable=True, default=None, comment="币安 API Key（Fernet 加密）")
+    api_secret: Mapped[str | None] = mapped_column(Text, nullable=True, default=None, comment="币安 API Secret（Fernet 加密）")
+    last_result: Mapped[dict | None] = mapped_column(JSONType, nullable=True, default=None, comment="最近一次 tick 结果 JSON")
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True, default=None, comment="最近错误")
+    last_tick_time: Mapped[datetime | None] = mapped_column(nullable=True, comment="最近运行时间")
+    description: Mapped[str | None] = mapped_column(Text, nullable=True, default=None, comment="备注")
+
+
+class QuantTradeRecordModel(ModelMixin, UserMixin):
+    """实时成交流水：模拟盘/实盘每次 tick 产生的成交。"""
+
+    __tablename__: str = "quant_trade_record"
+    __table_args__: dict[str, str] = {"comment": "量化实时成交流水表"}
+
+    strategy_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="实时策略实例ID")
+    mode: Mapped[str] = mapped_column(String(10), nullable=False, comment="运行模式：paper/live")
+    symbol: Mapped[str] = mapped_column(String(40), nullable=False, comment="交易对")
+    side: Mapped[str] = mapped_column(String(20), nullable=False, comment="方向：buy/sell/sellshort/buycover")
+    qty: Mapped[float] = mapped_column(Float, nullable=False, comment="成交数量")
+    price: Mapped[float] = mapped_column(Float, nullable=False, comment="成交价格")
+    fee: Mapped[float] = mapped_column(Float, nullable=False, default=0.0, comment="手续费")
+    pnl: Mapped[float | None] = mapped_column(Float, nullable=True, default=None, comment="已实现盈亏（平仓单）")
+    reason: Mapped[str | None] = mapped_column(String(200), nullable=True, default=None, comment="触发原因")
+    trade_time: Mapped[datetime | None] = mapped_column(nullable=True, comment="成交时间")
