@@ -1,0 +1,35 @@
+# 本地环境配置与密钥（禁止提交）
+.env
+.env.*
+!.env.example
+!front-web/.env.development.example
+!front-web/.env.production.example
+backend/env/.env.dev
+backend/env/.env.prod
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 前端
+node_modules/
+dist/
+*.local
+
+# IDE 与系统文件
+.idea/
+.vscode/
+.DS_Store
+
+# 量化下载数据（策略代码仍然纳入版本管理）
+user_data/data/**
+!user_data/data/.gitkeep
+!user_data/data/binance/
+user_data/data/binance/*
+!user_data/data/binance/.gitkeep
+user_data/logs/

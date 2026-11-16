@@ -30,3 +30,11 @@ BANNER_FILE = BASE_DIR / "banner.txt"
 # IP 归属地离线库（ip2region xdb）
 IP2REGION_DIR = BASE_DIR / "data" / "ip2region"
 IP2REGION_XDB_V4 = IP2REGION_DIR / "ip2region_v4.xdb"
+
+# 量化模块：项目根目录下的 user_data（与 freqtrade 习惯保持一致）
+PROJECT_ROOT = BASE_DIR.parent
+USER_DATA_DIR = PROJECT_ROOT / "user_data"
+QUANT_DATA_DIR = USER_DATA_DIR / "data"
+QUANT_STRATEGY_DIR = USER_DATA_DIR / "strategies"
+QUANT_BINANCE_DIR = QUANT_DATA_DIR / "binance"
+

@@ -8,8 +8,12 @@ from alembic.config import Config
 from typer.main import Typer
 
 from app.common.enums import EnvironmentEnum
+from app.modules.quant.cli import quant_cli
 
 fasttrade_cli: Typer = typer.Typer()
+# 量化工具：quant 为主命令名，mingling 为兼容别名
+fasttrade_cli.add_typer(quant_cli, name="quant")
+fasttrade_cli.add_typer(quant_cli, name="mingling")
 alembic_cfg: Config = Config(file_="alembic.ini")
 
 
