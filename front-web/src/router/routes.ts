@@ -28,8 +28,6 @@ import FastlinkChangelog from "@views/fastlink/changelog/index.vue";
 import FastlinkPricing from "@views/fastlink/pricing/index.vue";
 import FastlinkTutorial from "@views/fastlink/tutorial/index.vue";
 import FastlinkFachat from "@views/fastlink/fachat/index.vue";
-import QuantDownload from "@views/module_quant/download/index.vue";
-import QuantBacktest from "@views/module_quant/backtest/index.vue";
 
 // ──────── IframeRouteManager ────────
 
@@ -254,26 +252,6 @@ export const staticRoutes: AppRouteRecordRaw[] = [
         redirect: "/dashboard/workplace",
         meta: DASHBOARD_PARENT_META,
         children: dashboardLayoutChildren,
-      },
-      // 量化工具：下载与回测（静态路由，登录后可见）
-      {
-        path: "quant",
-        name: "Quant",
-        meta: { title: "量化", icon: "ri:bar-chart-2-line", alwaysShow: true },
-        children: [
-          {
-            path: "download",
-            name: "QuantDownload",
-            component: QuantDownload,
-            meta: { title: "量化-下载", icon: "ri:download-2-line", keepAlive: true },
-          },
-          {
-            path: "backtest",
-            name: "QuantBacktest",
-            component: QuantBacktest,
-            meta: { title: "量化-回测", icon: "ri:line-chart-line", keepAlive: true },
-          },
-        ],
       },
       // 隐藏的壳层路由：个人中心、更新日志、定价、教程、AI 聊天
       {

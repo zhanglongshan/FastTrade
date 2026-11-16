@@ -116,3 +116,26 @@ def backtest_command(
             return QuantBacktestOutSchema.model_validate(obj).model_dump(mode="json")
 
     _print_json(asyncio.run(_run()))
+
+
+@quant_cli.command("init-menu", help="幂等补入量化菜单到既有数据库（侧栏显示量化目录）")
+def init_menu_command(
+    env: Annotated[str, typer.Option("--env", help="运行环境")] = "dev",
+) -> None:
+    """为已初始化的数据库补入「量化」菜单树；新库无需执行（sys_menu.json 已含）。"""
+    _setup_env(env)
+    from app.core.database import async_db_session
+    from app.modules.quant.menu_init import ensure_quant_menus
+
+    async def _run() -> dict:
+        """在事务中幂等补菜单。"""
+        async with async_db_session() as db:
+            result = await ensure_quant_menus(db)
+            await db.commit()
+            return result
+
+    result = asyncio.run(_run())
+    typer.echo(
+        f"量化菜单处理完成：新建 {result['created']} 项，"
+        f"已存在跳过 {result['skipped']} 项。刷新前端（重新登录）即可在侧栏看到「量化」。"
+    )

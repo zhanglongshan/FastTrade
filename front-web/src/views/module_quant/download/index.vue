@@ -143,8 +143,9 @@ const fetchDatasets = async () => {
 const fetchFiles = async () => {
   const { data: res } = await QuantDataAPI.files();
   localFiles.value = res?.data ?? [];
-  if (!importForm.value.file_path && localFiles.value.length > 0) {
-    importForm.value.file_path = localFiles.value[0].path;
+  if (!importForm.value.file_path) {
+    const firstFile = localFiles.value.at(0);
+    if (firstFile) importForm.value.file_path = firstFile.path;
   }
 };
 

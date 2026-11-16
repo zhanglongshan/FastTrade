@@ -130,10 +130,9 @@ import { ElMessage } from "element-plus";
 import QuantBacktestAPI, {
   type QuantBacktestForm,
   type QuantBacktestTable,
-  type QuantDatasetTable,
   type QuantStrategyTable,
 } from "@api/module_quant/backtest.ts";
-import QuantDataAPI from "@api/module_quant/data.ts";
+import QuantDataAPI, { type QuantDatasetTable } from "@api/module_quant/data.ts";
 
 const form = ref<QuantBacktestForm>({
   dataset_id: 0,
@@ -177,8 +176,14 @@ const fetchOptions = async () => {
   const [datasetRes, strategyRes] = await Promise.all([QuantDataAPI.list({ limit: 100 }), QuantBacktestAPI.strategies()]);
   datasets.value = datasetRes?.data?.data ?? [];
   strategies.value = strategyRes?.data?.data ?? [];
-  if (!form.value.dataset_id && datasets.value.length > 0) form.value.dataset_id = datasets.value[0].id;
-  if (!form.value.strategy_name && strategies.value.length > 0) form.value.strategy_name = strategies.value[0].name;
+  if (!form.value.dataset_id) {
+    const firstDataset = datasets.value.at(0);
+    if (firstDataset) form.value.dataset_id = firstDataset.id;
+  }
+  if (!form.value.strategy_name) {
+    const firstStrategy = strategies.value.at(0);
+    if (firstStrategy) form.value.strategy_name = firstStrategy.name;
+  }
 };
 
 /** 加载历史回测。 */
