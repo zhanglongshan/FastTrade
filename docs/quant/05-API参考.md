@@ -36,7 +36,7 @@
 
 ### POST `/api/v1/quant/data/download`
 
-下载币安数据。
+下载币安数据。支持 `api`（官方 REST）、`mirror`（公开 REST 镜像，仅现货）、`archive`（历史归档 ZIP）三种来源。
 
 ```json
 {
@@ -44,12 +44,25 @@
   "interval": "1h",
   "start_time": "2024-01-01",
   "end_time": "2024-06-30",
+  "days": null,
+  "source": "archive",
+  "market": "spot",
+  "erase": false,
+  "fill_recent": true,
   "limit": 1000,
   "description": "回测用数据"
 }
 ```
 
-返回：`name`、`symbol`、`interval`、`file_path`、`downloaded`、`row_count`、`dataset_id`。
+| 字段 | 说明 |
+| --- | --- |
+| `source` | `api` / `mirror` / `archive`，默认 `api` |
+| `market` | `spot` / `futures`，默认 `spot` |
+| `days` | 最近 N 天，设置后优先于 `start_time`/`end_time` |
+| `erase` | 清空本地已有数据后重新写入 |
+| `fill_recent` | 归档方式是否用公开镜像补齐近端数据 |
+
+返回：`name`、`symbol`、`interval`、`source`、`market`、`file_path`、`downloaded`、`row_count`、`dataset_id`、`requests`、`archive_files`、`missing_periods`、`warnings`。
 
 ### POST `/api/v1/quant/data/import`
 

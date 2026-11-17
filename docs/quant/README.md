@@ -6,7 +6,7 @@
 
 | 能力 | 页面 | 主要命令 | 说明 |
 | --- | --- | --- | --- |
-| 币安数据下载 | 量化-下载 | `python main.py quant download` | 下载 OHLCV 到 `user_data/data/binance/*.csv` |
+| 币安数据下载 | 量化-下载 | `python main.py quant download` | 官方 REST / 公开镜像 / 历史归档，下载 OHLCV 到 `user_data/data/binance/*.csv` |
 | 本地 CSV 导入 | 量化-下载 | `python main.py quant import` | 导入符合列规范的 CSV 并登记数据集 |
 | 策略自动发现 | 量化-回测 | `python main.py quant strategies` | 扫描 `user_data/strategies/*.py` |
 | 策略回测 | 量化-回测 | `python main.py quant backtest` | 事件/信号两种策略模式，输出收益与成交流水 |

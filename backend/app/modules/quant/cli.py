@@ -42,16 +42,38 @@ def download_command(
     interval: Annotated[str, typer.Option("--interval", "-i", help="周期，如 1h")],
     start: Annotated[str | None, typer.Option("--start", help="起始时间 YYYY-MM-DD")] = None,
     end: Annotated[str | None, typer.Option("--end", help="结束时间 YYYY-MM-DD")] = None,
-    limit: Annotated[int, typer.Option("--limit", help="单页条数，上限 1000")] = 1000,
+    source: Annotated[
+        str,
+        typer.Option("--source", help="下载方式：api-官方REST，mirror-公开镜像(仅现货)，archive-历史归档"),
+    ] = "api",
+    market: Annotated[str, typer.Option("--market", help="市场：spot-现货，futures-U本位合约")] = "spot",
+    days: Annotated[int | None, typer.Option("--days", help="下载最近 N 天，优先于起止时间")] = None,
+    erase: Annotated[bool, typer.Option("--erase", help="清空已有数据后重新下载")] = False,
+    fill_recent: Annotated[
+        bool,
+        typer.Option("--fill-recent/--no-fill-recent", help="归档方式是否用公开镜像补齐近端数据"),
+    ] = True,
+    limit: Annotated[int, typer.Option("--limit", help="REST 单页条数，上限 1000")] = 1000,
     env: Annotated[str, typer.Option("--env", help="运行环境")] = "dev",
 ) -> None:
-    """下载币安历史 K 线。"""
+    """下载币安 K 线，支持官方 REST / 公开镜像 / 历史归档三种来源。"""
     _setup_env(env)
     from app.core.database import async_db_session
     from app.modules.quant.data.service import download_binance_data
     from app.modules.quant.schema import QuantDataDownloadSchema
 
-    params = QuantDataDownloadSchema(symbol=symbol, interval=interval, start_time=start, end_time=end, limit=limit)
+    params = QuantDataDownloadSchema(
+        symbol=symbol,
+        interval=interval,
+        start_time=start,
+        end_time=end,
+        days=days,
+        source=source,
+        market=market,
+        erase=erase,
+        fill_recent=fill_recent,
+        limit=limit,
+    )
 
     async def _run() -> dict:
         """在异步会话中执行下载。"""
@@ -59,6 +81,36 @@ def download_command(
             return await download_binance_data(params, db=db)
 
     _print_json(asyncio.run(_run()))
+
+
+@quant_cli.command("download-archive", help="从币安历史归档下载 K 线（等价 --source archive）")
+def download_archive_command(
+    symbol: Annotated[str, typer.Option("--symbol", "-s", help="交易对，如 BTC/USDT")],
+    interval: Annotated[str, typer.Option("--interval", "-i", help="周期，如 1h")],
+    start: Annotated[str, typer.Option("--start", help="起始时间 YYYY-MM-DD")],
+    end: Annotated[str, typer.Option("--end", help="结束时间 YYYY-MM-DD")],
+    market: Annotated[str, typer.Option("--market", help="市场：spot-现货，futures-U本位合约")] = "spot",
+    erase: Annotated[bool, typer.Option("--erase", help="清空已有数据后重新下载")] = False,
+    fill_recent: Annotated[
+        bool,
+        typer.Option("--fill-recent/--no-fill-recent", help="是否用公开镜像补齐归档延迟窗口"),
+    ] = True,
+    env: Annotated[str, typer.Option("--env", help="运行环境")] = "dev",
+) -> None:
+    """历史归档下载快捷命令。"""
+    download_command(
+        symbol=symbol,
+        interval=interval,
+        start=start,
+        end=end,
+        source="archive",
+        market=market,
+        days=None,
+        erase=erase,
+        fill_recent=fill_recent,
+        limit=1000,
+        env=env,
+    )
 
 
 @quant_cli.command("import", help="导入本地 CSV 并登记数据集")

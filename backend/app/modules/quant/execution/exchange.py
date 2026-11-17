@@ -19,7 +19,7 @@ import httpx
 from app.core.exceptions import CustomException
 from app.core.logger import logger
 
-from ..data.service import BINANCE_KLINES_URL, _row_from_klines
+from ..data.binance_download import BINANCE_API_KLINES_URL, row_from_raw
 from ..strategy.api import Candle
 
 # 实盘下单接口；与行情接口同域，便于统一出口白名单审计
@@ -49,7 +49,7 @@ def fetch_klines(
     own_client = client is None
     target = client or httpx.Client(timeout=20.0, headers={"User-Agent": "FastTradeQuant/1.0"})
     try:
-        response = target.get(BINANCE_KLINES_URL, params=params)
+        response = target.get(BINANCE_API_KLINES_URL, params=params)
         response.raise_for_status()
         payload = response.json()
     except (httpx.HTTPError, ValueError) as exc:
@@ -60,7 +60,7 @@ def fetch_klines(
 
     if not isinstance(payload, list) or not payload:
         raise CustomException(msg="币安未返回 K 线数据")
-    candles = [Candle(**_row_from_klines(row)) for row in payload]
+    candles = [Candle(**row_from_raw(row)) for row in payload]
     return sorted(candles, key=lambda item: item.date)
 
 

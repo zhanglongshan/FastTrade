@@ -73,6 +73,11 @@ export interface QuantDownloadForm {
   interval: string;
   start_time?: string;
   end_time?: string;
+  days?: number;
+  source?: "api" | "mirror" | "archive";
+  market?: "spot" | "futures";
+  erase?: boolean;
+  fill_recent?: boolean;
   limit?: number;
   description?: string;
 }
@@ -89,10 +94,15 @@ export interface QuantDownloadResult {
   name: string;
   symbol: string;
   interval: string;
+  source: string;
+  market: string;
   file_path: string;
   downloaded: number;
   row_count: number;
   dataset_id: number | null;
+  requests?: number;
+  archive_files?: number;
+  warnings?: string[];
 }
 
 export type QuantImportResult = QuantDownloadResult & { imported: number };

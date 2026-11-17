@@ -5,16 +5,29 @@
       <template #header>
         <div class="flex items-center justify-between">
           <span class="font-semibold">下载币安数据</span>
-          <span class="text-xs text-gray-500">数据保存到项目根目录 user_data/data/binance</span>
+          <span class="text-xs text-gray-500">现货 REST / 公开镜像 / 历史归档，保存到 user_data/data/binance</span>
         </div>
       </template>
       <el-form :model="downloadForm" label-width="90px" inline>
         <el-form-item label="交易对">
-          <el-input v-model="downloadForm.symbol" placeholder="BTC/USDT" style="width: 160px" />
+          <el-input v-model="downloadForm.symbol" placeholder="BTC/USDT" style="width: 150px" />
         </el-form-item>
         <el-form-item label="周期">
-          <el-select v-model="downloadForm.interval" style="width: 100px">
+          <el-select v-model="downloadForm.interval" style="width: 90px">
             <el-option v-for="item in intervals" :key="item" :label="item" :value="item" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="方式">
+          <el-select v-model="downloadForm.source" style="width: 140px">
+            <el-option label="现货 REST" value="api" />
+            <el-option label="公开镜像" value="mirror" />
+            <el-option label="历史归档" value="archive" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="市场">
+          <el-select v-model="downloadForm.market" style="width: 110px">
+            <el-option label="现货" value="spot" />
+            <el-option label="U本位合约" value="futures" />
           </el-select>
         </el-form-item>
         <el-form-item label="开始">
@@ -23,7 +36,7 @@
             type="date"
             value-format="YYYY-MM-DD"
             placeholder="默认近30天"
-            style="width: 150px"
+            style="width: 140px"
           />
         </el-form-item>
         <el-form-item label="结束">
@@ -32,19 +45,39 @@
             type="date"
             value-format="YYYY-MM-DD"
             placeholder="默认今天"
-            style="width: 150px"
+            style="width: 140px"
           />
         </el-form-item>
+        <el-form-item label="最近天数">
+          <el-input-number
+            v-model="downloadForm.days"
+            :min="1"
+            :max="3650"
+            controls-position="right"
+            placeholder="留空用起止日期"
+            style="width: 140px"
+          />
+        </el-form-item>
+        <el-form-item label="清空重下">
+          <el-switch v-model="downloadForm.erase" />
+        </el-form-item>
         <el-form-item label="备注">
-          <el-input v-model="downloadForm.description" placeholder="可选" style="width: 180px" />
+          <el-input v-model="downloadForm.description" placeholder="可选" style="width: 160px" />
         </el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="downloadLoading" @click="handleDownload">下载</el-button>
         </el-form-item>
       </el-form>
+      <div class="text-xs text-gray-500">
+        归档方式按整月/日 ZIP 下载，历史可回溯至币种上市；归档有约 2 天延迟，默认自动用公开镜像补齐近端数据。
+      </div>
       <div v-if="lastResult" class="mt-2 text-sm text-gray-600">
         已写入 <code>{{ lastResult.file_path }}</code>，本次新增 {{ lastResult.downloaded }} 根，合计
         {{ lastResult.row_count }} 根 K 线。
+        <span v-if="lastResult.source === 'archive'">（归档文件 {{ lastResult.archive_files ?? 0 }} 个）</span>
+        <div v-if="lastResult.warnings?.length" class="text-orange-500">
+          {{ lastResult.warnings.join("；") }}
+        </div>
       </div>
     </el-card>
 
@@ -101,18 +134,36 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onMounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import QuantDataAPI, {
   QUANT_INTERVALS,
   type QuantDatasetTable,
   type QuantDownloadResult,
+  type QuantDownloadForm,
   type QuantLocalFile,
 } from "@api/module_quant/data.ts";
 
 const intervals = QUANT_INTERVALS;
 
-const downloadForm = ref({ symbol: "BTC/USDT", interval: "1h", start_time: "", end_time: "", limit: 1000, description: "" });
+const downloadForm = ref<QuantDownloadForm>({
+  symbol: "BTC/USDT",
+  interval: "1h",
+  source: "api",
+  market: "spot",
+  start_time: "",
+  end_time: "",
+  limit: 1000,
+  description: "",
+});
+
+// 公开镜像只提供现货数据
+watch(
+  () => downloadForm.value.source,
+  (source) => {
+    if (source === "mirror") downloadForm.value.market = "spot";
+  },
+);
 const importForm = ref({ file_path: "", symbol: "BTC/USDT", interval: "1h", source: "local" });
 const datasets = ref<QuantDatasetTable[]>([]);
 const localFiles = ref<QuantLocalFile[]>([]);
@@ -156,8 +207,12 @@ const handleDownload = async () => {
     const { data: res } = await QuantDataAPI.download({
       symbol: downloadForm.value.symbol,
       interval: downloadForm.value.interval,
+      source: downloadForm.value.source,
+      market: downloadForm.value.market,
       start_time: downloadForm.value.start_time || undefined,
       end_time: downloadForm.value.end_time || undefined,
+      days: downloadForm.value.days || undefined,
+      erase: downloadForm.value.erase,
       limit: downloadForm.value.limit,
       description: downloadForm.value.description || undefined,
     });

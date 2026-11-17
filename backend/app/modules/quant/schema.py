@@ -1,6 +1,6 @@
 """量化模块 Pydantic 模型。"""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -48,13 +48,24 @@ class QuantIntervalValidatorMixin(BaseModel):
 
 
 class QuantDataDownloadSchema(QuantIntervalValidatorMixin):
-    """币安数据下载参数。"""
+    """币安数据下载参数。
+
+    source 支持三种方式：
+    - api：币安官方 REST，现货与 U 本位合约均可，适合近期数据；
+    - mirror：公开 REST 镜像（data-api.binance.vision），仅现货；
+    - archive：币安历史归档 ZIP（data.binance.vision），适合长历史，支持现货与合约。
+    """
 
     symbol: str = Field(description="交易对，如 BTC/USDT")
     interval: str = Field(description="K线周期，如 1h")
     start_time: str | None = Field(default=None, description="起始时间：YYYY-MM-DD、ISO8601 或毫秒时间戳")
     end_time: str | None = Field(default=None, description="结束时间：YYYY-MM-DD、ISO8601 或毫秒时间戳")
-    limit: int = Field(default=1000, ge=100, le=1000, description="单次请求条数，币安上限 1000")
+    days: int | None = Field(default=None, ge=1, le=3650, description="下载最近 N 天，设置后优先于起止时间")
+    source: Literal["api", "mirror", "archive"] = Field(default="api", description="下载方式：api / mirror / archive")
+    market: Literal["spot", "futures"] = Field(default="spot", description="市场：spot-现货，futures-U 本位合约")
+    limit: int = Field(default=1000, ge=100, le=1000, description="REST 单次请求条数，币安上限 1000")
+    erase: bool = Field(default=False, description="清空本地已有数据后重新写入")
+    fill_recent: bool = Field(default=True, description="归档方式是否用公开镜像补齐最近数据")
     description: str | None = Field(default=None, description="数据集备注")
 
 
