@@ -11,7 +11,7 @@ from app.core.base_model import JSONType, ModelMixin, UserMixin
 class QuantDatasetModel(ModelMixin, UserMixin):
     """量化数据集：记录本地 CSV 文件及下载范围。"""
 
-    __tablename__: str = "quant_dataset"
+    __tablename__: str = "quant_web3_dataset"
     __table_args__: dict[str, str] = {"comment": "量化数据集表"}
 
     name: Mapped[str] = mapped_column(String(150), nullable=False, unique=True, comment="数据集名称")
@@ -29,7 +29,7 @@ class QuantDatasetModel(ModelMixin, UserMixin):
 class QuantBacktestModel(ModelMixin, UserMixin):
     """量化回测记录：保存回测参数、状态与结果摘要。"""
 
-    __tablename__: str = "quant_backtest"
+    __tablename__: str = "quant_web3_backtest"
     __table_args__: dict[str, str] = {"comment": "量化回测记录表"}
 
     name: Mapped[str] = mapped_column(String(150), nullable=False, comment="回测名称")
@@ -49,7 +49,7 @@ class QuantBacktestModel(ModelMixin, UserMixin):
 class QuantLiveStrategyModel(ModelMixin, UserMixin):
     """实时策略实例：模拟盘(paper)与实盘(live)共用，仅执行器不同。"""
 
-    __tablename__: str = "quant_live_strategy"
+    __tablename__: str = "quant_web3_live_strategy"
     __table_args__: dict[str, str] = {"comment": "量化实时策略实例表"}
 
     name: Mapped[str] = mapped_column(String(150), nullable=False, comment="实例名称")
@@ -75,7 +75,7 @@ class QuantLiveStrategyModel(ModelMixin, UserMixin):
 class QuantTradeRecordModel(ModelMixin, UserMixin):
     """实时成交流水：模拟盘/实盘每次 tick 产生的成交。"""
 
-    __tablename__: str = "quant_trade_record"
+    __tablename__: str = "quant_web3_trade_record"
     __table_args__: dict[str, str] = {"comment": "量化实时成交流水表"}
 
     strategy_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True, comment="实时策略实例ID")

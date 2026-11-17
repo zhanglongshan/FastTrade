@@ -326,6 +326,33 @@ async def get_dataset(db: AsyncSession, dataset_id: int) -> QuantDatasetModel:
     return obj
 
 
+async def read_dataset_candles(
+    db: AsyncSession,
+    dataset_id: int,
+    *,
+    limit: int = 2000,
+    tail: bool = True,
+) -> dict[str, Any]:
+    """读取数据集 CSV 的 K 线，供图表展示。
+
+    大文件默认只取最后 limit 根（tail=True），避免一次把多年数据塞给前端。
+    """
+    dataset = await get_dataset(db, dataset_id)
+    csv_path = resolve_dataset_csv(dataset.file_path)
+    rows = _read_csv_rows(csv_path)
+    total = len(rows)
+    if tail and total > limit:
+        rows = rows[-limit:]
+    return {
+        "dataset_id": dataset.id,
+        "name": dataset.name,
+        "symbol": dataset.symbol,
+        "interval": dataset.interval,
+        "total": total,
+        "candles": rows,
+    }
+
+
 def list_local_csv_files() -> list[dict[str, Any]]:
     """列出允许目录下的 CSV 文件，供页面选择导入。"""
     result: list[dict[str, Any]] = []

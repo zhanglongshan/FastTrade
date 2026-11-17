@@ -21,6 +21,15 @@ export const QuantDataAPI = {
     });
   },
 
+  /** 查询数据集 K 线（图表用） */
+  candles(datasetId: number, params: QuantCandlesQuery = {}) {
+    return request<ApiResponse<QuantCandlesResult>>({
+      url: `${API_PATH}/candles/${datasetId}`,
+      method: "get",
+      params,
+    });
+  },
+
   /** 下载币安 K 线 */
   download(body: QuantDownloadForm) {
     return request<ApiResponse<QuantDownloadResult>>({
@@ -59,6 +68,29 @@ export interface QuantDatasetTable {
   status: number;
   description?: string | null;
   created_time?: string | null;
+}
+
+export interface QuantCandlesQuery {
+  limit?: number;
+  tail?: boolean;
+}
+
+export interface QuantCandle {
+  date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface QuantCandlesResult {
+  dataset_id: number;
+  name: string;
+  symbol: string;
+  interval: string;
+  total: number;
+  candles: QuantCandle[];
 }
 
 export interface QuantLocalFile {

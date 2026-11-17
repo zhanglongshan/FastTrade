@@ -4,17 +4,25 @@
 
 ## 1. 功能总览
 
+侧栏「量化」目录已拆分为三个独立市场，结构一致、共用同一套策略与执行引擎：
+
+| 市场目录 | 数据目录 | 数据表前缀 | 柜台/行情源 | 页面 |
+| --- | --- | --- | --- | --- |
+| **web3-量化** | `user_data/data/binance` | `quant_web3_*` | 币安 REST / 公开镜像 / 历史归档 | 下载、数据图表、回测、模拟盘、实盘 |
+| **量化-A股** | `user_data/data/astock` | `quant_astock_*` | 中泰 XTP（可插拔，默认模拟） | 数据、数据图表、回测、模拟盘、实盘 |
+| **量化-期货** | `user_data/data/futures` | `quant_futures_*` | CTP（可插拔，默认模拟） | 数据、数据图表、回测、模拟盘、实盘 |
+
 | 能力 | 页面 | 主要命令 | 说明 |
 | --- | --- | --- | --- |
-| 币安数据下载 | 量化-下载 | `python main.py quant download` | 官方 REST / 公开镜像 / 历史归档，下载 OHLCV 到 `user_data/data/binance/*.csv` |
-| 本地 CSV 导入 | 量化-下载 | `python main.py quant import` | 导入符合列规范的 CSV 并登记数据集 |
+| 币安数据下载 | web3-量化-下载 | `python main.py quant download` | 官方 REST / 公开镜像 / 历史归档，下载 OHLCV 到 `user_data/data/binance/*.csv` |
+| 本地 CSV 导入 | 各市场-数据 | `python main.py quant import` / API | 导入符合列规范的 CSV 并登记数据集 |
+| 数据图表 | 各市场-数据图表 | 页面 | ECharts 绘制 K 线 + 成交量 + 明细表格 |
 | 策略自动发现 | 量化-回测 | `python main.py quant strategies` | 扫描 `user_data/strategies/*.py` |
-| 策略回测 | 量化-回测 | `python main.py quant backtest` | 事件/信号两种策略模式，输出收益与成交流水 |
-| 记录查询 | 量化-回测 | API | 回测记录、净值曲线、成交明细入库 |
-| 模拟盘 | 量化-模拟盘 | `python main.py quant live-create/live-tick` | 实时行情 + 虚拟资金，本地即时撮合 |
-| 实盘 | 量化-实盘 | `python main.py quant live-create` | 复用同策略，默认 dry-run，可对接币安真实下单 |
+| 策略回测 | 各市场-回测 | `python main.py quant backtest` | 事件/信号两种策略模式，输出收益与成交流水 |
+| 模拟盘 | 各市场-模拟盘 | `python main.py quant live-create/live-tick` | 实时行情 + 虚拟资金，本地即时撮合 |
+| 实盘 | 各市场-实盘 | `python main.py quant live-create` | 复用同策略，默认 dry-run |
 
-> **一套策略，三种模式**：回测、模拟盘、实盘共用同一份策略代码和 `api.buy/sell/sellshort/buycover/close_all` 接口，仅执行器不同。详见 [统一策略接口](./07-统一策略接口.md)。
+> **一套策略，三种模式、三个市场**：`user_data/strategies/` 下的同一份策略可被 web3 / A股 / 期货共用；回测、模拟盘、实盘共用 `api.buy/sell/sellshort/buycover/close_all` 接口，仅执行器与柜台不同。详见 [统一策略接口](./07-统一策略接口.md) 与 [三市场与数据图表](./08-三市场与数据图表.md)。
 
 ## 2. 环境与数据库
 
@@ -24,9 +32,15 @@
 - PostgreSQL 驱动 `asyncpg` / `psycopg` 已列入核心依赖，`uv sync` 默认安装，无需再带 `--extra postgres`。
 - SQL 解析使用纯 Python 的 `sqlglot`，**不要改回 `sqlglot[rs]`**：其 Rust 扩展在 Python 3.14 下无预编译 wheel，会触发源码编译导致 `uv sync` 卡在 `Building sqlglotrs`。
 
-首次启动会自动建表并初始化基础数据；`quant_dataset`、`quant_backtest`、`quant_live_strategy`、`quant_trade_record` 四张表由 Alembic 迁移生成（迁移文件在 `backend/app/alembic/versions/`）。
+首次启动会自动建表并初始化基础数据。量化相关表由 Alembic 迁移生成（迁移文件在 `backend/app/alembic/versions/`），共 12 张：
 
-若从旧版本升级后侧栏缺少「模拟盘/实盘」菜单，执行一次幂等补菜单命令（既有库不会自动重导种子数据）：
+- web3：`quant_web3_dataset`、`quant_web3_backtest`、`quant_web3_live_strategy`、`quant_web3_trade_record`
+- A股：`quant_astock_dataset`、`quant_astock_backtest`、`quant_astock_live_strategy`、`quant_astock_trade_record`
+- 期货：`quant_futures_dataset`、`quant_futures_backtest`、`quant_futures_live_strategy`、`quant_futures_trade_record`
+
+> 旧版 `quant_*` 表已在迁移中重命名为 `quant_web3_*` 并保留历史数据。
+
+若从旧版本升级后侧栏缺少「数据图表 / 量化-A股 / 量化-期货」菜单，执行一次幂等补菜单命令（既有库不会自动重导种子数据）：
 
 ```bash
 python main.py quant init-menu --env=dev
@@ -52,12 +66,11 @@ pnpm install
 pnpm dev
 ```
 
-页面入口（均由后端 `sys_menu` 动态注册到侧栏「量化」目录）：
+页面入口（均由后端 `sys_menu` 动态注册到侧栏，父目录为 web3-量化 / 量化-A股 / 量化-期货）：
 
-- `/quant/download`：量化-下载
-- `/quant/backtest`：量化-回测
-- `/quant/paper`：量化-模拟盘
-- `/quant/live`：量化-实盘
+- web3-量化：`/quant/download`、`/quant/chart`、`/quant/backtest`、`/quant/paper`、`/quant/live`
+- 量化-A股：`/quant-astock/data`、`/quant-astock/chart`、`/quant-astock/backtest`、`/quant-astock/paper`、`/quant-astock/live`
+- 量化-期货：`/quant-futures/data`、`/quant-futures/chart`、`/quant-futures/backtest`、`/quant-futures/paper`、`/quant-futures/live`
 
 若新菜单未出现，重新登录以刷新菜单。普通用户访问 API 需要以下权限码；超级管理员默认放行：
 
@@ -76,26 +89,40 @@ pnpm dev
 | `module_quant:live:run` | 手动运行一次 tick |
 | `module_quant:live:delete` | 删除实例 |
 
+A股/期货的权限码前缀分别为 `module_quant_astock:*` / `module_quant_futures:*`（如 `module_quant_astock:data:query`、`module_quant_futures:live:query`）。
+
 ## 4. 目录约定
 
 ```text
 user_data/
 ├── data/
-│   ├── binance/                  # 币安下载数据（不入库到 Git）
-│   └── *.csv                     # 导入的本地数据
-└── strategies/
+│   ├── binance/                  # 币安下载数据（现货；不入库到 Git）
+│   │   └── futures/              # 币安 U 本位合约数据
+│   ├── astock/                   # A股导入数据
+│   ├── futures/                  # 期货导入数据
+│   └── *.csv                     # 导入的本地数据（供页面选择）
+└── strategies/                   # 三市场共用策略目录
     ├── sma_cross_strategy.py     # 事件模式示例
     └── rsi_signal_strategy.py    # 信号模式示例
 
-backend/app/modules/quant/
-├── data/                         # 下载、导入、数据集接口
-├── strategy/                     # 策略基类、api 封装、自动发现
-├── backtest/                     # 回测引擎、记录接口
-├── execution/                    # 统一执行层（账本/策略API/币安网关/运行时引擎）
-├── runtime/                      # 实时策略实例服务与接口（模拟盘/实盘）
-├── model.py                      # ORM 模型
-├── schema.py                     # Pydantic 模型
-└── cli.py                        # 命令行入口
+backend/app/modules/
+├── quant/                        # web3-量化
+│   ├── data/                     # 下载、导入、数据集、K线接口
+│   ├── strategy/                 # 策略基类、api 封装、自动发现
+│   ├── backtest/                 # 回测引擎、记录接口
+│   ├── execution/                # 统一执行层（账本/策略API/币安网关/运行时引擎）
+│   ├── runtime/                  # 实时策略实例服务与接口（模拟盘/实盘）
+│   ├── model.py / schema.py / cli.py
+│   └── data/binance_download.py  # REST / 镜像 / 历史归档下载器
+└── quant_market/                 # A股 + 期货通用模块（按 market key 参数化）
+    ├── config.py                 # 市场配置（表名/数据目录/柜台类型）
+    ├── broker.py                 # XTP / CTP 可插拔柜台适配层（默认模拟）
+    ├── model.py / schema.py / service.py / controller.py
+front-web/src/views/
+├── module_quant/                 # web3 页面（含 chart 数据图表）
+├── module_quant_astock/          # A股页面（薄包装）
+├── module_quant_futures/         # 期货页面（薄包装）
+└── module_quant_market/          # A股/期货共享工作区组件
 ```
 
 ## 5. 文档索引
@@ -107,6 +134,7 @@ backend/app/modules/quant/
 5. [API 参考](./05-API参考.md)
 6. [模拟盘与实盘](./06-模拟盘与实盘.md)
 7. [统一策略接口（回测/模拟/实盘）](./07-统一策略接口.md)
+8. [三市场与数据图表](./08-三市场与数据图表.md)
 
 ## 6. 边界说明
 

@@ -1,8 +1,7 @@
-"""量化菜单初始化：向已初始化的数据库幂等补入「量化」菜单树。
+"""量化菜单初始化：向既有数据库幂等补入三套量化菜单树。
 
-新库的菜单来自 `sql/sys_menu.json`（已包含量化菜单），但既有库因种子数据
-「表已有数据则跳过」的机制不会自动获得新菜单。本模块提供一个幂等命令，
-供既有库执行一次即可在侧栏显示「量化 → 量化-下载 / 量化-回测」。
+新库的菜单来自 `sql/sys_menu.json`（已包含 web3-量化 / 量化-A股 / 量化-期货），
+既有库因种子数据「表已有数据则跳过」机制不会自动获得新菜单。本模块提供幂等命令。
 
 用法:
     uv run python main.py quant init-menu --env=dev
@@ -15,119 +14,131 @@ from app.core.base_model import MappedBase
 from app.modules.system.menu.model import MenuModel
 from app.utils.import_util import ImportUtil
 
-# 导入全部模型，确保 MenuModel.roles 的 secondary="sys_role_menus" 等跨模块关系可解析
+# 导入全部模型，确保 MenuModel.roles 的 secondary 等跨模块关系可解析
 ImportUtil.find_models(MappedBase)
 
-# 量化菜单树：目录 + 两个页面。scope=web 保证管理端可见（超管自动可见；
-# 非超管需在角色管理中勾选，或执行本命令后由管理员分配）。
-QUANT_MENU_TREE: list[dict] = [
-    {
-        "name": "量化",
+
+def _page(name, permission, route_name, route_path, component, icon, order, description):
+    """构造页面节点。"""
+    return {
+        "name": name,
+        "type": 2,
+        "icon": icon,
+        "order": order,
+        "permission": permission,
+        "route_name": route_name,
+        "route_path": route_path,
+        "component_path": component,
+        "status": 0,
+        "keep_alive": True,
+        "hidden": False,
+        "always_show": False,
+        "title": name,
+        "affix": False,
+        "redirect": None,
+        "description": description,
+    }
+
+
+def _directory(name, route_name, route_path, icon, order, description, children):
+    """构造目录节点。"""
+    return {
+        "name": name,
         "type": 1,
-        "icon": "ri:bar-chart-2-line",
-        "order": 8,
+        "icon": icon,
+        "order": order,
         "permission": None,
-        "route_name": "Quant",
-        "route_path": "/quant",
+        "route_name": route_name,
+        "route_path": route_path,
         "component_path": None,
         "status": 0,
         "keep_alive": True,
         "hidden": False,
         "always_show": True,
-        "title": "量化",
+        "title": name,
         "affix": False,
-        "redirect": "/quant/download",
+        "redirect": f"{route_path}/{children[0]['route_path']}",
         "scope": "web",
-        "description": "量化工具：数据下载与策略回测",
-        "_children": [
-            {
-                "name": "量化-下载",
-                "type": 2,
-                "icon": "ri:download-2-line",
-                "order": 1,
-                "permission": "module_quant:data:query",
-                "route_name": "QuantDownload",
-                "route_path": "download",
-                "component_path": "module_quant/download/index",
-                "status": 0,
-                "keep_alive": True,
-                "hidden": False,
-                "always_show": False,
-                "title": "量化-下载",
-                "affix": False,
-                "redirect": None,
-                "description": "币安数据下载与本地 CSV 导入",
-            },
-            {
-                "name": "量化-回测",
-                "type": 2,
-                "icon": "ri:line-chart-line",
-                "order": 2,
-                "permission": "module_quant:backtest:query",
-                "route_name": "QuantBacktest",
-                "route_path": "backtest",
-                "component_path": "module_quant/backtest/index",
-                "status": 0,
-                "keep_alive": True,
-                "hidden": False,
-                "always_show": False,
-                "title": "量化-回测",
-                "affix": False,
-                "redirect": None,
-                "description": "策略回测配置与结果查看",
-            },
-            {
-                "name": "量化-模拟盘",
-                "type": 2,
-                "icon": "ri:play-circle-line",
-                "order": 3,
-                "permission": "module_quant:live:query",
-                "route_name": "QuantPaper",
-                "route_path": "paper",
-                "component_path": "module_quant/paper/index",
-                "status": 0,
-                "keep_alive": True,
-                "hidden": False,
-                "always_show": False,
-                "title": "量化-模拟盘",
-                "affix": False,
-                "redirect": None,
-                "description": "虚拟资金实时策略验证",
-            },
-            {
-                "name": "量化-实盘",
-                "type": 2,
-                "icon": "ri:line-chart-line",
-                "order": 4,
-                "permission": "module_quant:live:query",
-                "route_name": "QuantLive",
-                "route_path": "live",
-                "component_path": "module_quant/live/index",
-                "status": 0,
-                "keep_alive": True,
-                "hidden": False,
-                "always_show": False,
-                "title": "量化-实盘",
-                "affix": False,
-                "redirect": None,
-                "description": "币安实盘交易（默认 dry-run）",
-            },
-        ],
+        "description": description,
+        "_children": children,
     }
+
+
+WEB3_MENU = _directory(
+    "web3-量化", "Web3Quant", "/web3-quant", "ri:bar-chart-2-line", 8,
+    "Web3 量化：币安数据下载、回测、模拟盘与实盘",
+    [
+        _page("web3-量化-下载", "module_quant:data:query", "QuantDownload", "download",
+              "module_quant/download/index", "ri:download-2-line", 1, "币安数据下载与本地 CSV 导入"),
+        _page("web3-量化-图表", "module_quant:data:query", "QuantChart", "chart",
+              "module_quant/chart/index", "ri:bar-chart-line", 2, "已下载数据的 K 线与成交量图表"),
+        _page("web3-量化-回测", "module_quant:backtest:query", "QuantBacktest", "backtest",
+              "module_quant/backtest/index", "ri:line-chart-line", 3, "策略回测配置与结果查看"),
+        _page("web3-量化-模拟盘", "module_quant:live:query", "QuantPaper", "paper",
+              "module_quant/paper/index", "ri:play-circle-line", 4, "虚拟资金实时策略验证"),
+        _page("web3-量化-实盘", "module_quant:live:query", "QuantLive", "live",
+              "module_quant/live/index", "ri:exchange-2-line", 5, "币安实盘交易（默认 dry-run）"),
+    ],
+)
+
+
+def _market_menu(name, route_name, route_path, icon, order, description, prefix, perm_prefix):
+    """构造 A股/期货市场的菜单树（五个页面）。"""
+    specs = [
+        ("data", "ri:download-2-line", "数据下载与本地 CSV 导入"),
+        ("chart", "ri:bar-chart-line", "已下载数据的 K 线与成交量图表"),
+        ("backtest", "ri:line-chart-line", "策略回测配置与结果查看"),
+        ("paper", "ri:play-circle-line", "虚拟资金实时策略验证"),
+        ("live", "ri:exchange-2-line", "实盘交易（可插拔柜台适配层）"),
+    ]
+    children = [
+        _page(f"{name}-{key}", f"{perm_prefix}:{key}:query", f"{prefix}{key.title()}", key,
+              f"module_{prefix.lower()}/{key}/index", icon, idx, desc)
+        for idx, (key, icon, desc) in enumerate(specs, start=1)
+    ]
+    return _directory(name, route_name, route_path, icon, order, description, children)
+
+
+QUANT_MENU_TREE: list[dict] = [
+    WEB3_MENU,
+    _market_menu("量化-A股", "QuantAStock", "/quant-astock", "ri:stock-line", 9,
+                 "A 股量化：中泰 XTP 柜台适配（默认离线/模拟）", "QuantAStock", "module_quant_astock"),
+    _market_menu("量化-期货", "QuantFutures", "/quant-futures", "ri:bar-chart-box-line", 10,
+                 "期货量化：CTP 柜台适配（默认离线/模拟）", "QuantFutures", "module_quant_futures"),
 ]
 
 
 async def ensure_quant_menus(db: AsyncSession) -> dict[str, int]:
-    """幂等补入量化菜单树。
+    """幂等补入三套量化菜单树。
 
-    参数:
-    - db: 异步数据库会话。
-
-    返回:
-    - dict: 统计信息 {"created": 新建数, "skipped": 已存在数}。
+    既有库从「量化」升级到「web3-量化」时，旧菜单的 route_path=/quant 已不存在，
+    因此会把旧目录及其子项软删除，再按新定义补入，避免留下重复菜单。
     """
     created = 0
     skipped = 0
+
+    # 清理旧的「量化」目录（route_path=/quant），避免与 web3-量化 重复
+    legacy = (
+        await db.execute(
+            select(MenuModel).where(
+                MenuModel.route_path == "/quant",
+                MenuModel.is_deleted.is_(False),
+            )
+        )
+    ).scalars().all()
+    for node in legacy:
+        node.is_deleted = True
+        for child in (
+            await db.execute(
+                select(MenuModel).where(
+                    MenuModel.parent_id == node.id,
+                    MenuModel.is_deleted.is_(False),
+                )
+            )
+        ).scalars().all():
+            child.is_deleted = True
+    if legacy:
+        await db.flush()
 
     for node in QUANT_MENU_TREE:
         children = node.get("_children", [])
@@ -151,7 +162,7 @@ async def ensure_quant_menus(db: AsyncSession) -> dict[str, int]:
             await db.flush()
             created += 1
 
-        # 无论父节点是新建还是已存在，都补齐缺失的子菜单
+        # 父节点已存在时也补齐缺失的子菜单（支持版本升级追加页面）
         for child in children:
             child_existing = (
                 await db.execute(

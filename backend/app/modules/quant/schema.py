@@ -98,6 +98,28 @@ class QuantDatasetOutSchema(BaseModel):
     created_time: DateTimeStr | None = Field(default=None, description="创建时间")
 
 
+class QuantCandleSchema(BaseModel):
+    """单根 K 线。"""
+
+    date: str = Field(description="UTC ISO8601 时间")
+    open: float = Field(description="开盘价")
+    high: float = Field(description="最高价")
+    low: float = Field(description="最低价")
+    close: float = Field(description="收盘价")
+    volume: float = Field(description="成交量")
+
+
+class QuantCandlesOutSchema(BaseModel):
+    """数据集 K 线响应。"""
+
+    dataset_id: int = Field(description="数据集ID")
+    name: str = Field(description="数据集名称")
+    symbol: str = Field(description="交易对")
+    interval: str = Field(description="K线周期")
+    total: int = Field(description="CSV 中总 K 线数")
+    candles: list[QuantCandleSchema] = Field(description="K 线列表（可能截断）")
+
+
 class QuantLocalFileSchema(BaseModel):
     """可导入的本地文件。"""
 

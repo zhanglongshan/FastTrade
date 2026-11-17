@@ -290,11 +290,11 @@ def live_stop_command(
     _print_json(asyncio.run(_run()))
 
 
-@quant_cli.command("init-menu", help="幂等补入量化菜单到既有数据库（侧栏显示量化目录）")
+@quant_cli.command("init-menu", help="幂等补入三套量化菜单到既有数据库")
 def init_menu_command(
     env: Annotated[str, typer.Option("--env", help="运行环境")] = "dev",
 ) -> None:
-    """为已初始化的数据库补入「量化」菜单树；新库无需执行（sys_menu.json 已含）。"""
+    """为已初始化的数据库补入菜单树；新库无需执行（sys_menu.json 已含）。"""
     _setup_env(env)
     from app.core.database import async_db_session
     from app.modules.quant.menu_init import ensure_quant_menus
@@ -309,5 +309,6 @@ def init_menu_command(
     result = asyncio.run(_run())
     typer.echo(
         f"量化菜单处理完成：新建 {result['created']} 项，"
-        f"已存在跳过 {result['skipped']} 项。刷新前端（重新登录）即可在侧栏看到「量化」。"
+        f"已存在跳过 {result['skipped']} 项。刷新前端（重新登录）即可看到"
+        f"「web3-量化 / 量化-A股 / 量化-期货」。"
     )

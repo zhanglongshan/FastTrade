@@ -11,12 +11,20 @@ from app.core.dependencies import AuthPermission, db_getter
 from app.core.router_class import OperationLogRoute
 
 from ..schema import (
+    QuantCandlesOutSchema,
     QuantDataDownloadSchema,
     QuantDataImportSchema,
     QuantDatasetOutSchema,
     QuantLocalFileSchema,
 )
-from .service import download_binance_data, get_dataset, import_local_csv, list_datasets, list_local_csv_files
+from .service import (
+    download_binance_data,
+    get_dataset,
+    import_local_csv,
+    list_datasets,
+    list_local_csv_files,
+    read_dataset_candles,
+)
 
 QuantDataRouter = APIRouter(route_class=OperationLogRoute, prefix="/data", tags=["量化-数据"])
 
@@ -63,6 +71,23 @@ async def get_quant_dataset_controller(
     """查询单个数据集。"""
     obj = await get_dataset(db, dataset_id)
     return SuccessResponse(data=QuantDatasetOutSchema.model_validate(obj), msg="查询成功")
+
+
+@QuantDataRouter.get(
+    "/candles/{dataset_id}",
+    summary="查询数据集 K 线（图表用）",
+    response_model=ResponseSchema[QuantCandlesOutSchema],
+)
+async def get_quant_candles_controller(
+    dataset_id: int,
+    auth: Annotated[AuthSchema, Security(AuthPermission(["module_quant:data:query"]))],
+    db: Annotated[AsyncSession, Depends(db_getter)],
+    limit: Annotated[int, Query(ge=1, le=20000, description="返回条数，默认最后 2000 根")] = 2000,
+    tail: Annotated[bool, Query(description="True 取最后 limit 根，False 取最前 limit 根")] = True,
+):
+    """读取已登记数据集的 K 线，供图表与明细表格展示。"""
+    result = await read_dataset_candles(db, dataset_id, limit=limit, tail=tail)
+    return SuccessResponse(data=QuantCandlesOutSchema.model_validate(result), msg="查询成功")
 
 
 @QuantDataRouter.post(
