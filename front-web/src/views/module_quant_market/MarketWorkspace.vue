@@ -130,7 +130,7 @@
             <el-table-column prop="status" label="状态" width="80" />
             <el-table-column label="操作" width="140">
               <template #default="{ row }">
-                <el-button link type="primary" @click="handleTick(row)">运行一次</el-button>
+                <el-button link type="primary" @click="handleTick(row as MarketLive)">运行一次</el-button>
               </template>
             </el-table-column>
           </el-table>

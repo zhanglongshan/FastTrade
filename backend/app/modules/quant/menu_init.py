@@ -84,6 +84,9 @@ WEB3_MENU = _directory(
 
 def _market_menu(name, route_name, route_path, icon, order, description, prefix, perm_prefix):
     """构造 A股/期货市场的菜单树（五个页面）。"""
+    # component 前缀必须与前端 views 目录名一致（module_quant_astock / module_quant_futures），
+    # 不能由路由前缀 lower() 推导（QuantAStock -> quantastock 会丢下划线）。
+    component_prefix = perm_prefix  # module_quant_astock / module_quant_futures
     specs = [
         ("data", "ri:download-2-line", "数据下载与本地 CSV 导入"),
         ("chart", "ri:bar-chart-line", "已下载数据的 K 线与成交量图表"),
@@ -93,7 +96,7 @@ def _market_menu(name, route_name, route_path, icon, order, description, prefix,
     ]
     children = [
         _page(f"{name}-{key}", f"{perm_prefix}:{key}:query", f"{prefix}{key.title()}", key,
-              f"module_{prefix.lower()}/{key}/index", icon, idx, desc)
+              f"{component_prefix}/{key}/index", icon, idx, desc)
         for idx, (key, icon, desc) in enumerate(specs, start=1)
     ]
     return _directory(name, route_name, route_path, icon, order, description, children)
@@ -154,6 +157,10 @@ async def ensure_quant_menus(db: AsyncSession) -> dict[str, int]:
         ).scalar_one_or_none()
 
         if existing:
+            # 已存在也同步关键字段，修复早期版本写入的错误 component_path / permission
+            for field in ("component_path", "permission", "route_name", "title", "redirect"):
+                if payload.get(field) is not None and getattr(existing, field, None) != payload[field]:
+                    setattr(existing, field, payload[field])
             skipped += 1
             parent = existing
         else:
@@ -174,6 +181,10 @@ async def ensure_quant_menus(db: AsyncSession) -> dict[str, int]:
                 )
             ).scalar_one_or_none()
             if child_existing:
+                # 同步已存在子菜单的关键字段，修正历史错误路径
+                for field in ("component_path", "permission", "route_name", "title"):
+                    if child.get(field) is not None and getattr(child_existing, field, None) != child[field]:
+                        setattr(child_existing, field, child[field])
                 skipped += 1
                 continue
             db.add(MenuModel(**child, parent_id=parent.id))
