@@ -16,7 +16,13 @@ from app.config.path_conf import (
     QUANT_DATA_DIR,
 )
 from app.core.base_schema import AuthSchema
+from app.core.base_model import MappedBase
 from app.core.exceptions import CustomException
+from app.utils.import_util import ImportUtil
+
+# 注册全部 ORM 模型，确保 UserMixin.creator 等跨模块 relationship 可解析
+# （CLI 单独运行时不会经过应用工厂的自动发现，需在此显式触发）
+ImportUtil.find_models(MappedBase)
 
 from ..model import QuantDatasetModel
 from ..schema import QuantDataDownloadSchema, QuantDataImportSchema
@@ -27,6 +33,11 @@ CSV_COLUMNS = ["date", "open", "high", "low", "close", "volume"]
 
 # 允许 API 导入的目录：防止通过 ../ 读取任意本地文件
 ALLOWED_IMPORT_DIRS = [QUANT_DATA_DIR, BASE_DIR / "data" / "quant"]
+
+
+def _naive_utc(value: datetime) -> datetime:
+    """把带时区的 UTC 时间转成 naive UTC，适配 TIMESTAMP WITHOUT TIME ZONE 列。"""
+    return value.astimezone(UTC).replace(tzinfo=None)
 
 
 def _relative_path(path: Path) -> str:
@@ -129,8 +140,8 @@ async def upsert_dataset(
         "source": source,
         "file_path": _relative_path(file_path),
         "row_count": len(rows),
-        "start_time": ms_to_datetime(int(datetime.fromisoformat(rows[0]["date"]).timestamp() * 1000)) if rows else None,
-        "end_time": ms_to_datetime(int(datetime.fromisoformat(rows[-1]["date"]).timestamp() * 1000)) if rows else None,
+        "start_time": _naive_utc(ms_to_datetime(int(datetime.fromisoformat(rows[0]["date"]).timestamp() * 1000))) if rows else None,
+        "end_time": _naive_utc(ms_to_datetime(int(datetime.fromisoformat(rows[-1]["date"]).timestamp() * 1000))) if rows else None,
         "description": description,
     }
     if obj is None:

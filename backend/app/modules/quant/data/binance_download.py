@@ -386,17 +386,24 @@ async def fetch_rows(
             if source == "mirror"
             else BINANCE_FAPI_KLINES_URL if market == "futures" else BINANCE_API_KLINES_URL
         )
-        async with _client() as client:
-            await fetch_rest(
-                client,
-                url=url,
-                symbol=symbol,
-                interval=interval,
-                start_ms=start_ms,
-                end_ms=end_ms,
-                limit=limit,
-                result=result,
-            )
+        try:
+            async with _client() as client:
+                await fetch_rest(
+                    client,
+                    url=url,
+                    symbol=symbol,
+                    interval=interval,
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                    limit=limit,
+                    result=result,
+                )
+        except CustomException as exc:
+            if source == "api":
+                raise CustomException(
+                    msg=f"{exc.msg}；当前网络可能无法访问币安官方接口，可改用 --source mirror 或 --source archive"
+                ) from exc
+            raise
 
     result.rows = merge_rows(clip_rows(result.rows, start_ms, end_ms))
     if not result.rows:
