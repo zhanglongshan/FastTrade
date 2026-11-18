@@ -50,19 +50,51 @@
         <el-tab-pane label="图表" name="chart">
           <el-form label-width="90px" inline>
             <el-form-item label="数据集">
-              <el-select v-model="chartDatasetId" filterable placeholder="选择数据集" style="width: 300px" @change="loadCandles">
-                <el-option v-for="d in datasets" :key="d.id" :label="d.name" :value="d.id" />
+              <el-select
+                v-model="chartDatasetId"
+                filterable
+                placeholder="选择数据集"
+                style="width: 300px"
+                @change="handleChartDatasetChange"
+              >
+                <el-option v-for="d in datasets" :key="d.id" :label="`${d.name} (${d.row_count} 根)`" :value="d.id" />
               </el-select>
             </el-form-item>
+            <el-form-item label="显示条数">
+              <el-select v-model="chartLimit" style="width: 120px" @change="loadCandles">
+                <el-option v-for="n in chartLimits" :key="n" :label="`最后 ${n} 根`" :value="n" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="叠加">
+              <el-checkbox v-model="chartShowMa">均线</el-checkbox>
+              <el-checkbox v-model="chartShowVolume">成交量</el-checkbox>
+            </el-form-item>
+            <el-form-item label="缩放">
+              <el-button size="small" @click="chartRef?.zoomToLatest()">最近</el-button>
+              <el-button size="small" @click="chartRef?.zoomToAll()">全览</el-button>
+            </el-form-item>
           </el-form>
-          <div ref="chartEl" class="market-chart" v-loading="busy"></div>
-          <el-table :data="chartCandles" border stripe size="small" max-height="320" class="mt-3">
+          <KlineChart
+            ref="chartRef"
+            :candles="chartCandles"
+            :show-ma="chartShowMa"
+            :show-volume="chartShowVolume"
+            :height="420"
+          />
+          <el-table :data="chartRows" border stripe size="small" max-height="320" class="mt-3">
             <el-table-column prop="date" label="时间" min-width="180" />
-            <el-table-column prop="open" label="开" />
-            <el-table-column prop="high" label="高" />
-            <el-table-column prop="low" label="低" />
-            <el-table-column prop="close" label="收" />
-            <el-table-column prop="volume" label="量" />
+            <el-table-column prop="open" label="开" align="right" />
+            <el-table-column prop="high" label="高" align="right" />
+            <el-table-column prop="low" label="低" align="right" />
+            <el-table-column prop="close" label="收" align="right" />
+            <el-table-column label="涨跌幅" width="100" align="right">
+              <template #default="{ row }">
+                <span :style="{ color: row.change >= 0 ? '#ef5350' : '#26a69a' }">
+                  {{ row.change >= 0 ? "+" : "" }}{{ row.change.toFixed(2) }}%
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="volume" label="量" align="right" />
           </el-table>
         </el-tab-pane>
 
@@ -144,10 +176,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, nextTick } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
 import { useRoute } from "vue-router";
-import { echarts } from "@/plugins/echarts.ts";
+import KlineChart from "@/components/quant/KlineChart.vue";
 import QuantAStockAPI from "@api/module_quant_astock/index.ts";
 import QuantFuturesAPI from "@api/module_quant_futures/index.ts";
 import type {
@@ -176,8 +208,21 @@ const backtests = ref<MarketBacktest[]>([]);
 const lives = ref<MarketLive[]>([]);
 const chartDatasetId = ref<number | null>(null);
 const chartCandles = ref<MarketCandle[]>([]);
-const chartEl = ref<HTMLDivElement | null>(null);
-let chart: ReturnType<typeof echarts.init> | null = null;
+const chartLimit = ref(500);
+const chartLimits = [200, 500, 1000, 2000];
+const chartShowMa = ref(true);
+const chartShowVolume = ref(true);
+const chartRef = ref<{ zoomToLatest: () => void; zoomToAll: () => void } | null>(null);
+
+/** 图表明细行：附加相对前收盘的涨跌幅。 */
+const chartRows = computed(() => {
+  const candles = chartCandles.value;
+  return candles.map((item, index) => {
+    const prevClose = index > 0 ? (candles[index - 1]?.close ?? item.open) : item.open;
+    const change = prevClose ? ((item.close - prevClose) / prevClose) * 100 : 0;
+    return { ...item, change };
+  });
+});
 
 const importForm = ref({ file_path: "", symbol: "", interval: "1d", source: "local" });
 const backtestForm = ref({ dataset_id: 0 as number, strategy_name: "SmaCrossStrategy", initial_cash: 10000 });
@@ -217,37 +262,20 @@ const handleImport = async () => {
   }
 };
 
-const renderChart = () => {
-  if (!chartEl.value || !chartCandles.value.length) return;
-  if (!chart) chart = echarts.init(chartEl.value);
-  const rows = chartCandles.value;
-  const dates = rows.map((r) => r.date.slice(0, 16).replace("T", " "));
-  const ohlc = rows.map((r) => [r.open, r.close, r.low, r.high]);
-  chart.setOption({
-    animation: false,
-    tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
-    grid: { left: 60, right: 20, top: 30, height: "70%" },
-    xAxis: { type: "category", data: dates },
-    yAxis: { scale: true },
-    dataZoom: [{ type: "inside" }, { type: "slider", bottom: 5, height: 16 }],
-    series: [{
-      type: "candlestick", name: "K线", data: ohlc,
-      itemStyle: { color: "#ef5350", color0: "#26a69a", borderColor: "#ef5350", borderColor0: "#26a69a" },
-    }],
-  }, true);
-};
-
 const loadCandles = async () => {
   if (!chartDatasetId.value) return;
   busy.value = true;
   try {
-    const { data: res } = await api.value.candles(chartDatasetId.value, { limit: 500 });
+    const { data: res } = await api.value.candles(chartDatasetId.value, { limit: chartLimit.value });
     chartCandles.value = res?.data?.candles ?? [];
-    await nextTick();
-    renderChart();
   } finally {
     busy.value = false;
   }
+};
+
+/** 切换图表数据集。 */
+const handleChartDatasetChange = () => {
+  void loadCandles();
 };
 
 const openChart = (id: number) => {
@@ -308,7 +336,3 @@ onMounted(() => {
   void fetchLives();
 });
 </script>
-
-<style scoped>
-.market-chart { width: 100%; height: 380px; }
-</style>

@@ -31,6 +31,8 @@ import {
   DataZoomComponent,
   GeoComponent,
   TitleComponent,
+  AxisPointerComponent,
+  MarkLineComponent,
 } from "echarts/components";
 
 // 导入渲染器
@@ -55,14 +57,16 @@ echarts.use([
   DataZoomComponent,
   GeoComponent,
   TitleComponent,
+  AxisPointerComponent,
+  MarkLineComponent,
 
   // 渲染器
   CanvasRenderer,
 ]);
 
-// 导出 echarts 实例和类型
+// 导出 echarts 实例和类型（从 echarts 包导出，避免自引用循环定义）
 export { echarts };
-export type { EChartsOption, BarSeriesOption } from "@/plugins/echarts.ts";
+export type { EChartsOption, BarSeriesOption } from "echarts";
 
 // 导出常用的图形工具
 export const graphic = echarts.graphic;

@@ -69,17 +69,31 @@
       </div>
       <div class="mb-4">
         <div class="text-xs text-gray-500 mb-1">净值曲线（{{ current.result.equity_curve.length }} 个点）</div>
-        <svg viewBox="0 0 100 40" preserveAspectRatio="none" class="w-full h-24 bg-gray-50 border rounded">
-          <polyline :points="equityPolyline" fill="none" stroke="#2563eb" stroke-width="0.6" vector-effect="non-scaling-stroke" />
-        </svg>
+        <EquityChart
+          :points="current.result.equity_curve"
+          :initial-cash="current.result.initial_cash"
+          :height="240"
+        />
       </div>
       <el-table :data="current.result.trades" border stripe size="small" max-height="320">
         <el-table-column prop="date" label="成交时间" min-width="180" />
-        <el-table-column prop="side" label="方向" width="110" />
-        <el-table-column prop="qty" label="数量" width="130" />
-        <el-table-column prop="price" label="成交价" width="120" />
-        <el-table-column prop="fee" label="手续费" width="110" />
-        <el-table-column prop="pnl" label="盈亏" width="110" />
+        <el-table-column label="方向" width="110">
+          <template #default="{ row }">{{ sideText(row.side) }}</template>
+        </el-table-column>
+        <el-table-column prop="qty" label="数量" width="130" align="right" />
+        <el-table-column prop="price" label="成交价" width="120" align="right" />
+        <el-table-column prop="fee" label="手续费" width="110" align="right" />
+        <el-table-column label="盈亏" width="110" align="right">
+          <template #default="{ row }">
+            <span
+              v-if="row.pnl !== null && row.pnl !== undefined"
+              :style="{ color: row.pnl >= 0 ? '#ef5350' : '#26a69a' }"
+            >
+              {{ row.pnl.toFixed(2) }}
+            </span>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="reason" label="原因" min-width="160" />
       </el-table>
       <pre class="mt-3 p-2 bg-gray-50 border rounded text-xs overflow-auto max-h-40">{{ current.result.logs.join("\n") || "（策略无日志）" }}</pre>
@@ -125,8 +139,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
+import EquityChart from "@/components/quant/EquityChart.vue";
 import QuantBacktestAPI, {
   type QuantBacktestForm,
   type QuantBacktestTable,
@@ -154,22 +169,9 @@ const statusText = (status: number): string => (status === 1 ? "成功" : status
 /** 百分比格式化。 */
 const formatPercent = (value: number): string => `${(value * 100).toFixed(2)}%`;
 
-/** 净值曲线折线点。 */
-const equityPolyline = computed(() => {
-  const curve = current.value?.result?.equity_curve ?? [];
-  if (curve.length < 2) return "";
-  const values = curve.map((point) => point.equity);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const range = max - min || 1;
-  return curve
-    .map((point, index) => {
-      const x = (index / (curve.length - 1)) * 100;
-      const y = 38 - ((point.equity - min) / range) * 36;
-      return `${x.toFixed(2)},${y.toFixed(2)}`;
-    })
-    .join(" ");
-});
+/** 成交方向中文。 */
+const sideText = (side: string): string =>
+  ({ buy: "买入", sell: "卖出", sellshort: "开空", buycover: "平空" })[side] ?? side;
 
 /** 加载数据集与策略。 */
 const fetchOptions = async () => {

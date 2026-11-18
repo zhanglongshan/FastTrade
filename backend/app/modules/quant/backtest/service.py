@@ -16,6 +16,11 @@ from ..strategy.loader import load_strategy
 from .engine import load_candles, run_backtest
 
 
+def _naive_utc() -> datetime:
+    """返回 naive UTC，适配 TIMESTAMP WITHOUT TIME ZONE 列。"""
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
 async def create_backtest(
     params: QuantBacktestCreateSchema,
     *,
@@ -45,7 +50,7 @@ async def create_backtest(
         initial_cash=params.initial_cash,
         fee_rate=params.fee_rate,
         status=0,
-        started_time=datetime.now(UTC),
+        started_time=_naive_utc(),
         description=params.description,
         created_id=user_id,
     )
@@ -70,7 +75,7 @@ async def create_backtest(
     except Exception as exc:  # noqa: BLE001 - 任何失败都要落库，便于页面排查
         obj.status = 2
         obj.error = str(exc)
-        obj.finished_time = datetime.now(UTC)
+        obj.finished_time = _naive_utc()
         await db.commit()
         await db.refresh(obj)
         if isinstance(exc, CustomException):
@@ -80,7 +85,7 @@ async def create_backtest(
     obj.status = 1
     obj.result = result
     obj.error = None
-    obj.finished_time = datetime.now(UTC)
+    obj.finished_time = _naive_utc()
     await db.commit()
     await db.refresh(obj)
     return obj
