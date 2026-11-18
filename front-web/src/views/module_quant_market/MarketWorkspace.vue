@@ -1,6 +1,7 @@
 <!-- A股/期货量化共享工作区：数据、图表、回测、模拟盘、实盘 -->
 <template>
-  <div class="flex flex-col gap-4 p-4">
+  <!-- 卡片统一 shrink-0：避免布局 flex 链压扁卡片导致图表/表格裁切 -->
+  <div class="flex flex-col gap-4 p-4 [&>*]:shrink-0">
     <el-alert
       :title="`${label} · 柜台适配器：${broker}`"
       type="info"

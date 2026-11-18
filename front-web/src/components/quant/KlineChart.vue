@@ -1,16 +1,14 @@
 <!-- 量化 K 线图表：K 线 + 成交量 + 均线，三市场（web3/A股/期货）共用 -->
 <template>
-  <div v-if="candles.length" ref="chartEl" class="w-full" :style="{ height: `${height}px` }"></div>
-  <el-empty
-    v-else
-    description="暂无 K 线数据"
-    :image-size="80"
-    :style="{ height: `${height}px` }"
-  />
+  <!-- 外层固定高度并由自身裁切，避免父级 flex/卡片把它压扁后 canvas 溢出裁切错位 -->
+  <div class="quant-chart" :style="{ height: `${height}px` }">
+    <div v-show="hasData" ref="chartEl" class="quant-chart__canvas"></div>
+    <el-empty v-if="!hasData" description="暂无 K 线数据" :image-size="80" />
+  </div>
 </template>
 
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { echarts } from "@/plugins/echarts.ts";
 
 interface Candle {
@@ -35,6 +33,7 @@ const props = withDefaults(
 );
 
 const chartEl = ref<HTMLDivElement | null>(null);
+const hasData = computed(() => props.candles.length > 0);
 let chart: ReturnType<typeof echarts.init> | null = null;
 let observer: ResizeObserver | null = null;
 
@@ -147,6 +146,8 @@ const render = () => {
       tooltip: {
         trigger: "axis",
         axisPointer: { type: "cross" },
+        // 提示框限制在画布内，避免溢出到相邻卡片
+        confine: true,
         backgroundColor: "rgba(255,255,255,0.96)",
         borderColor: "#e0e0e0",
         borderWidth: 1,
@@ -182,19 +183,20 @@ const render = () => {
         },
       },
       legend: {
-        top: 0,
+        top: 4,
         icon: "roundRect",
         itemWidth: 12,
         itemHeight: 4,
         textStyle: { fontSize: 11 },
         data: series.map((item) => item.name as string),
       },
+      // 用底部百分比定位，避免固定像素在缩放条/不同高度下互相压盖
       grid: hasVolume
         ? [
-            { left: 68, right: 24, top: 34, height: "54%" },
-            { left: 68, right: 24, top: "69%", height: "13%" },
+            { left: 64, right: 20, top: 36, bottom: "34%" },
+            { left: 64, right: 20, height: "15%", bottom: "12%" },
           ]
-        : [{ left: 68, right: 24, top: 34, bottom: 46 }],
+        : [{ left: 64, right: 20, top: 36, bottom: 52 }],
       xAxis: hasVolume
         ? [
             {
@@ -239,8 +241,8 @@ const render = () => {
               scale: true,
               gridIndex: 1,
               splitNumber: 2,
-              splitLine: { show: false },
               axisLabel: { fontSize: 10, formatter: (value: number) => fmtVolume(value) },
+              splitLine: { show: false },
             },
           ]
         : [
@@ -261,8 +263,8 @@ const render = () => {
         {
           type: "slider",
           xAxisIndex: hasVolume ? [0, 1] : [0],
-          top: "88%",
-          height: 18,
+          bottom: 8,
+          height: 16,
           start: zoomStart,
           end: 100,
           brushSelect: false,
@@ -273,6 +275,8 @@ const render = () => {
     },
     true,
   );
+  // 容器尺寸可能在隐藏标签页 / 卡片布局完成前为 0，绘制后补一次尺寸校正
+  chart.resize();
 };
 
 const scheduleRender = async () => {
@@ -302,12 +306,21 @@ const zoomToAll = () => {
 
 defineExpose({ zoomToLatest, zoomToAll });
 
+/** 监听画布元素尺寸（元素可能因数据到达才显示，需随 ref 变化重新绑定）。 */
+watch(
+  chartEl,
+  (el, oldEl) => {
+    if (oldEl) observer?.unobserve(oldEl);
+    if (el && typeof ResizeObserver !== "undefined") {
+      observer ??= new ResizeObserver(() => handleResize());
+      observer.observe(el);
+    }
+  },
+  { flush: "post" },
+);
+
 onMounted(() => {
   void scheduleRender();
-  if (typeof ResizeObserver !== "undefined" && chartEl.value) {
-    observer = new ResizeObserver(() => handleResize());
-    observer.observe(chartEl.value);
-  }
   window.addEventListener("resize", handleResize);
 });
 
@@ -319,3 +332,26 @@ onBeforeUnmount(() => {
   chart = null;
 });
 </script>
+
+<style scoped lang="scss">
+.quant-chart {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+
+  // 空数据时垂直居中提示
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  &__canvas {
+    flex: 1 1 auto;
+    align-self: stretch;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+  }
+}
+</style>

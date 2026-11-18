@@ -1,6 +1,7 @@
 <!-- 量化-回测：选择数据集与策略执行回测，展示收益与成交明细 -->
 <template>
-  <div class="flex flex-col gap-4 p-4">
+  <!-- 卡片统一 shrink-0：避免布局 flex 链压扁卡片导致内容裁切 -->
+  <div class="flex flex-col gap-4 p-4 [&>*]:shrink-0">
     <el-card shadow="never">
       <template #header>
         <div class="flex items-center justify-between">

@@ -1,6 +1,7 @@
 <!-- 量化-图表：查看已下载数据集的 K 线、成交量、均线、区间概要与明细 -->
 <template>
-  <div class="flex flex-col gap-4 p-4">
+  <!-- 卡片统一 shrink-0：页面高度由布局 flex 链锁定，不设防会被压扁裁切 K 线 -->
+  <div class="flex flex-col gap-4 p-4 [&>*]:shrink-0">
     <el-card shadow="never">
       <template #header>
         <div class="flex items-center justify-between">

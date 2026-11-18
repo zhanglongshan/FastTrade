@@ -1,16 +1,14 @@
 <!-- 净值曲线：回测结果可视化（面积渐变 + 初始资金基准线 + 收益率 tooltip） -->
 <template>
-  <div v-if="points.length" ref="chartEl" class="w-full" :style="{ height: `${height}px` }"></div>
-  <el-empty
-    v-else
-    description="暂无净值数据"
-    :image-size="60"
-    :style="{ height: `${height}px` }"
-  />
+  <!-- 外层固定高度并自行裁切，避免父级 flex/卡片压扁后 canvas 溢出 -->
+  <div class="equity-chart" :style="{ height: `${height}px` }">
+    <div v-show="hasData" ref="chartEl" class="equity-chart__canvas"></div>
+    <el-empty v-if="!hasData" description="暂无净值数据" :image-size="60" />
+  </div>
 </template>
 
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { echarts } from "@/plugins/echarts.ts";
 
 interface EquityPoint {
@@ -28,6 +26,7 @@ const props = withDefaults(
 );
 
 const chartEl = ref<HTMLDivElement | null>(null);
+const hasData = computed(() => props.points.length > 0);
 let chart: ReturnType<typeof echarts.init> | null = null;
 let observer: ResizeObserver | null = null;
 
@@ -60,6 +59,8 @@ const render = () => {
       tooltip: {
         trigger: "axis",
         axisPointer: { type: "cross" },
+        // 提示框限制在画布内
+        confine: true,
         backgroundColor: "rgba(255,255,255,0.96)",
         borderColor: "#e0e0e0",
         borderWidth: 1,
@@ -80,7 +81,7 @@ const render = () => {
           </div>`;
         },
       },
-      grid: { left: 70, right: 24, top: 20, bottom: zoomed ? 52 : 32 },
+      grid: { left: 70, right: 24, top: 24, bottom: zoomed ? 46 : 32 },
       xAxis: {
         type: "category",
         data: dates,
@@ -98,7 +99,15 @@ const render = () => {
       dataZoom: zoomed
         ? [
             { type: "inside", start: 0, end: 100 },
-            { type: "slider", top: "86%", height: 16, start: 0, end: 100, brushSelect: false, showDetail: false },
+            {
+              type: "slider",
+              bottom: 8,
+              height: 14,
+              start: 0,
+              end: 100,
+              brushSelect: false,
+              showDetail: false,
+            },
           ]
         : [],
       series: [
@@ -137,6 +146,7 @@ const render = () => {
     },
     true,
   );
+  chart.resize();
 };
 
 const scheduleRender = async () => {
@@ -148,12 +158,21 @@ watch(() => [props.points, props.initialCash], scheduleRender, { deep: false });
 
 const handleResize = () => chart?.resize();
 
+/** 画布元素随数据出现，需跟随 ref 重新绑定尺寸监听。 */
+watch(
+  chartEl,
+  (el, oldEl) => {
+    if (oldEl) observer?.unobserve(oldEl);
+    if (el && typeof ResizeObserver !== "undefined") {
+      observer ??= new ResizeObserver(() => handleResize());
+      observer.observe(el);
+    }
+  },
+  { flush: "post" },
+);
+
 onMounted(() => {
   void scheduleRender();
-  if (typeof ResizeObserver !== "undefined" && chartEl.value) {
-    observer = new ResizeObserver(() => handleResize());
-    observer.observe(chartEl.value);
-  }
   window.addEventListener("resize", handleResize);
 });
 
@@ -165,3 +184,24 @@ onBeforeUnmount(() => {
   chart = null;
 });
 </script>
+
+<style scoped lang="scss">
+.equity-chart {
+  position: relative;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+
+  &__canvas {
+    flex: 1 1 auto;
+    align-self: stretch;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+  }
+}
+</style>

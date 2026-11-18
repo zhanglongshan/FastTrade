@@ -1,6 +1,6 @@
 <!-- 量化-下载：币安 K 线下载与本地 CSV 导入 -->
 <template>
-  <div class="flex flex-col gap-4 p-4">
+  <div class="flex flex-col gap-4 p-4 [&>*]:shrink-0">
     <el-card shadow="never">
       <template #header>
         <div class="flex items-center justify-between">
