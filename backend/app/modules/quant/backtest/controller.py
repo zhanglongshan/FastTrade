@@ -7,28 +7,33 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.response import ResponseSchema, SuccessResponse
 from app.core.base_schema import AuthSchema
-from app.core.dependencies import AuthPermission, db_getter
+from app.core.dependencies import AuthPermission, db_getter, db_getter_autocommit
 from app.core.router_class import OperationLogRoute
 
 from ..schema import QuantBacktestCreateSchema, QuantBacktestOutSchema
-from .service import create_backtest, get_backtest, list_backtests
+from .service import create_backtests, get_backtest, list_backtests
 
 QuantBacktestRouter = APIRouter(route_class=OperationLogRoute, prefix="/backtest", tags=["量化-回测"])
 
 
 @QuantBacktestRouter.post(
     "/run",
-    summary="执行策略回测",
-    response_model=ResponseSchema[QuantBacktestOutSchema],
+    summary="执行策略回测（支持多个数据集）",
+    response_model=ResponseSchema[list[QuantBacktestOutSchema]],
 )
 async def run_quant_backtest_controller(
     data: QuantBacktestCreateSchema,
     auth: Annotated[AuthSchema, Security(AuthPermission(["module_quant:backtest:run"]))],
-    db: Annotated[AsyncSession, Depends(db_getter)],
+    db: Annotated[AsyncSession, Depends(db_getter_autocommit)],
 ):
-    """用指定数据集与策略执行回测，返回汇总结果。"""
-    obj = await create_backtest(data, db=db, auth=auth)
-    return SuccessResponse(data=QuantBacktestOutSchema.model_validate(obj), msg="回测完成")
+    """对每个选中的数据集执行回测，返回各自的记录。
+
+    使用不带外层 begin() 的会话：service 内部需自行 commit + refresh 分步落库。
+    """
+    items = await create_backtests(data, db=db, auth=auth)
+    failed = sum(1 for item in items if item.status == 2)
+    message = f"回测完成：{len(items) - failed} 成功" + (f"，{failed} 失败" if failed else "")
+    return SuccessResponse(data=[QuantBacktestOutSchema.model_validate(item) for item in items], msg=message)
 
 
 @QuantBacktestRouter.get(

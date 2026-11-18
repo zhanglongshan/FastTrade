@@ -75,6 +75,7 @@ def run_backtest(
     initial_cash: float = 10000.0,
     fee_rate: float = 0.001,
     slippage: float = 0.0,
+    allow_short: bool = True,
 ) -> dict[str, Any]:
     """执行回测并返回结果摘要。
 
@@ -84,6 +85,7 @@ def run_backtest(
     - mode: event-事件回调，signal-信号列。
     - symbol/interval: 元数据，传给信号模式策略。
     - initial_cash/fee_rate/slippage: 账户与成交参数。
+    - allow_short: 是否允许开空；现货回测传 False。
 
     返回:
     - dict[str, Any]: 收益、回撤、成交明细与净值曲线。
@@ -91,7 +93,13 @@ def run_backtest(
     if len(candles) < 2:
         raise CustomException(msg="至少需要 2 根 K 线才能回测")
 
-    api = TradeAPI(candles, initial_cash=initial_cash, fee_rate=fee_rate, slippage=slippage)
+    api = TradeAPI(
+        candles,
+        initial_cash=initial_cash,
+        fee_rate=fee_rate,
+        slippage=slippage,
+        allow_short=allow_short,
+    )
     strategy = strategy_cls()
     warmup = max(0, int(getattr(strategy_cls, "startup_candle_count", 0) or 0))
     metadata = {"pair": symbol, "interval": interval}

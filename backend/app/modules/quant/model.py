@@ -18,6 +18,9 @@ class QuantDatasetModel(ModelMixin, UserMixin):
     symbol: Mapped[str] = mapped_column(String(40), nullable=False, comment="交易对，如 BTC/USDT")
     interval: Mapped[str] = mapped_column(String(10), nullable=False, comment="K线周期，如 1h")
     source: Mapped[str] = mapped_column(String(30), nullable=False, default="binance", comment="数据来源")
+    market: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="spot", server_default="spot", comment="市场：spot-现货，futures-合约"
+    )
     file_path: Mapped[str] = mapped_column(String(500), nullable=False, comment="本地 CSV 相对路径")
     row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="K线数量")
     start_time: Mapped[datetime | None] = mapped_column(nullable=True, comment="数据起始时间")
@@ -36,6 +39,9 @@ class QuantBacktestModel(ModelMixin, UserMixin):
     strategy_name: Mapped[str] = mapped_column(String(150), nullable=False, comment="策略类名")
     symbol: Mapped[str] = mapped_column(String(40), nullable=False, comment="交易对")
     interval: Mapped[str] = mapped_column(String(10), nullable=False, comment="K线周期")
+    market: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="spot", server_default="spot", comment="市场：spot-现货，futures-合约"
+    )
     initial_cash: Mapped[float] = mapped_column(Float, nullable=False, default=10000.0, comment="初始资金")
     fee_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.001, comment="单边手续费率")
     status: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="状态：0=运行中，1=成功，2=失败")

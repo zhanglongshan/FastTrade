@@ -79,6 +79,7 @@ class TradeAPI:
         initial_cash: float,
         fee_rate: float = 0.001,
         slippage: float = 0.0,
+        allow_short: bool = True,
     ) -> None:
         """初始化账户。
 
@@ -87,12 +88,14 @@ class TradeAPI:
         - initial_cash: 初始资金。
         - fee_rate: 单边手续费率，0.001 表示 0.1%。
         - slippage: 滑点比例，0.001 表示 0.1%。
+        - allow_short: 是否允许开空；现货回测传 False，策略调用 sellshort 会被拒绝。
         """
         self.candles = candles
         self.initial_cash = initial_cash
         self.cash = initial_cash
         self.fee_rate = fee_rate
         self.slippage = slippage
+        self.allow_short = allow_short
 
         self.long_qty = 0.0
         self.short_qty = 0.0
@@ -217,6 +220,9 @@ class TradeAPI:
         reason: str = "",
     ) -> bool:
         """开空。未指定数量时按账户净值的 ratio 比例开空。"""
+        if not self.allow_short:
+            self.log("当前为现货市场，忽略开空信号")
+            return False
         if not self._validate_ratio(ratio):
             return False
         signal_price = float(price or self.current_price)

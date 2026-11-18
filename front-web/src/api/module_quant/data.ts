@@ -52,6 +52,7 @@ export const QuantDataAPI = {
 export interface QuantDatasetQuery {
   symbol?: string;
   interval?: string;
+  market?: "spot" | "futures";
   limit?: number;
 }
 
@@ -61,6 +62,7 @@ export interface QuantDatasetTable {
   symbol: string;
   interval: string;
   source: string;
+  market: "spot" | "futures";
   file_path: string;
   row_count: number;
   start_time?: string | null;
@@ -98,6 +100,7 @@ export interface QuantLocalFile {
   name: string;
   size: number;
   modified_time: string;
+  market: "spot" | "futures";
 }
 
 export interface QuantDownloadForm {
@@ -119,6 +122,7 @@ export interface QuantImportForm {
   symbol: string;
   interval: string;
   source?: string;
+  market?: "spot" | "futures";
   description?: string;
 }
 

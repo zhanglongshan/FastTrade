@@ -39,10 +39,11 @@ async def list_quant_datasets_controller(
     db: Annotated[AsyncSession, Depends(db_getter)],
     symbol: Annotated[str | None, Query(description="按交易对筛选")] = None,
     interval: Annotated[str | None, Query(description="按周期筛选")] = None,
+    market: Annotated[str | None, Query(description="按市场筛选：spot-现货，futures-合约")] = None,
     limit: Annotated[int, Query(ge=1, le=500, description="返回条数")] = 100,
 ):
     """查询已登记的本地数据集。"""
-    datasets = await list_datasets(db, symbol=symbol, interval=interval, limit=limit)
+    datasets = await list_datasets(db, symbol=symbol, interval=interval, market=market, limit=limit)
     return SuccessResponse(data=[QuantDatasetOutSchema.model_validate(item) for item in datasets], msg="查询成功")
 
 

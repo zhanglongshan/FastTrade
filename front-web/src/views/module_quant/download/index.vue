@@ -105,6 +105,12 @@
         <el-form-item label="来源">
           <el-input v-model="importForm.source" style="width: 110px" />
         </el-form-item>
+        <el-form-item label="市场">
+          <el-select v-model="importForm.market" style="width: 110px">
+            <el-option label="现货" value="spot" />
+            <el-option label="合约" value="futures" />
+          </el-select>
+        </el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="importLoading" @click="handleImport">导入</el-button>
         </el-form-item>
@@ -125,6 +131,9 @@
         <el-table-column prop="symbol" label="交易对" width="120" />
         <el-table-column prop="interval" label="周期" width="80" />
         <el-table-column prop="source" label="来源" width="100" />
+        <el-table-column label="市场" width="90">
+          <template #default="{ row }">{{ row.market === "futures" ? "合约" : "现货" }}</template>
+        </el-table-column>
         <el-table-column prop="row_count" label="K线数" width="100" />
         <el-table-column prop="file_path" label="本地文件" min-width="240" show-overflow-tooltip />
         <el-table-column prop="created_time" label="创建时间" width="170" />
@@ -164,7 +173,7 @@ watch(
     if (source === "mirror") downloadForm.value.market = "spot";
   },
 );
-const importForm = ref({ file_path: "", symbol: "BTC/USDT", interval: "1h", source: "local" });
+const importForm = ref({ file_path: "", symbol: "BTC/USDT", interval: "1h", source: "local", market: "spot" as "spot" | "futures" });
 const datasets = ref<QuantDatasetTable[]>([]);
 const localFiles = ref<QuantLocalFile[]>([]);
 const lastResult = ref<QuantDownloadResult | null>(null);
@@ -183,7 +192,7 @@ const formatSize = (size: number): string => {
 const fetchDatasets = async () => {
   listLoading.value = true;
   try {
-    const { data: res } = await QuantDataAPI.list({ limit: 100 });
+    const { data: res } = await QuantDataAPI.list({ limit: 500 });
     datasets.value = res?.data ?? [];
   } finally {
     listLoading.value = false;
@@ -196,9 +205,21 @@ const fetchFiles = async () => {
   localFiles.value = res?.data ?? [];
   if (!importForm.value.file_path) {
     const firstFile = localFiles.value.at(0);
-    if (firstFile) importForm.value.file_path = firstFile.path;
+    if (firstFile) {
+      importForm.value.file_path = firstFile.path;
+      importForm.value.market = firstFile.market;
+    }
   }
 };
+
+/** 选择文件时按路径自动推断市场，用户仍可手动改。 */
+watch(
+  () => importForm.value.file_path,
+  (path) => {
+    const file = localFiles.value.find((item) => item.path === path);
+    if (file) importForm.value.market = file.market;
+  },
+);
 
 /** 提交下载任务。 */
 const handleDownload = async () => {

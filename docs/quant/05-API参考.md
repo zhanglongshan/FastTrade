@@ -24,6 +24,7 @@
 | --- | --- | --- |
 | `symbol` | query | 可选，如 `BTCUSDT` |
 | `interval` | query | 可选，如 `1h` |
+| `market` | query | 可选，`spot`-现货 / `futures`-合约 |
 | `limit` | query | 默认 100，最大 500 |
 
 ### GET `/api/v1/quant/data/files`
@@ -99,11 +100,11 @@
 
 ### POST `/api/v1/quant/backtest/run`
 
-执行回测。
+执行回测，支持一次选择多个数据集（最多 50 个）。`dataset_id` 为旧版单数据集兼容字段，与新字段合并去重。
 
 ```json
 {
-  "dataset_id": 1,
+  "dataset_ids": [1, 2, 3],
   "strategy_name": "SmaCrossStrategy",
   "name": "BTC-1h-均线测试",
   "initial_cash": 10000,
@@ -112,7 +113,7 @@
 }
 ```
 
-返回 `QuantBacktestOutSchema`，其中 `result` 包含收益、回撤、成交流水与净值曲线。
+返回 `QuantBacktestOutSchema` 列表，每个选中的数据集一条记录；记录中的 `market` 标明现货/合约，现货回测自动禁止开空。单个数据集失败时该条 `status=2`、`error` 有原因，其余记录照常返回。
 
 ### GET `/api/v1/quant/backtest/list`
 

@@ -2,7 +2,7 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.validator import DateTimeStr
 
@@ -76,6 +76,7 @@ class QuantDataImportSchema(QuantIntervalValidatorMixin):
     symbol: str = Field(description="交易对，如 BTC/USDT")
     interval: str = Field(description="K线周期，如 1h")
     source: str = Field(default="local", description="数据来源标识")
+    market: Literal["spot", "futures"] = Field(default="spot", description="市场：spot-现货，futures-合约")
     description: str | None = Field(default=None, description="数据集备注")
 
 
@@ -89,6 +90,7 @@ class QuantDatasetOutSchema(BaseModel):
     symbol: str = Field(description="交易对")
     interval: str = Field(description="K线周期")
     source: str = Field(description="数据来源")
+    market: str = Field(default="spot", description="市场：spot-现货，futures-合约")
     file_path: str = Field(description="本地 CSV 相对路径")
     row_count: int = Field(description="K线数量")
     start_time: DateTimeStr | None = Field(default=None, description="数据起始时间")
@@ -127,6 +129,7 @@ class QuantLocalFileSchema(BaseModel):
     name: str = Field(description="文件名")
     size: int = Field(description="文件字节数")
     modified_time: str = Field(description="修改时间 ISO8601")
+    market: str = Field(default="spot", description="根据路径推断的市场：spot/futures")
 
 
 class QuantStrategyOutSchema(BaseModel):
@@ -140,15 +143,31 @@ class QuantStrategyOutSchema(BaseModel):
 
 
 class QuantBacktestCreateSchema(BaseModel):
-    """创建回测任务参数。"""
+    """创建回测任务参数。
 
-    dataset_id: int = Field(description="数据集ID")
+    dataset_ids 支持一次选择多个数据集（每个数据集 = 交易对 + 周期 + 市场），
+    dataset_id 为旧版单数据集接口兼容字段，两者会合并去重。
+    """
+
+    dataset_ids: list[int] = Field(default_factory=list, description="数据集ID列表，支持多选")
+    dataset_id: int | None = Field(default=None, description="单个数据集ID（兼容旧调用）")
     strategy_name: str = Field(description="策略类名，必须与策略文件中的类名一致")
     name: str | None = Field(default=None, description="回测名称，为空时自动生成")
     initial_cash: float = Field(default=10000.0, gt=0, description="初始资金")
     fee_rate: float = Field(default=0.001, ge=0, le=0.1, description="单边手续费率，0.001=0.1%")
     slippage: float = Field(default=0.0, ge=0, le=0.1, description="滑点比例，0.001=0.1%")
     description: str | None = Field(default=None, description="备注")
+
+    @model_validator(mode="after")
+    def normalize_dataset_ids(self) -> "QuantBacktestCreateSchema":
+        """合并新旧字段、去重并校验数量。"""
+        ids = list(dict.fromkeys([*self.dataset_ids, *([self.dataset_id] if self.dataset_id else [])]))
+        if not ids:
+            raise ValueError("请至少选择一个数据集")
+        if len(ids) > 50:
+            raise ValueError("单次最多回测 50 个数据集")
+        self.dataset_ids = ids
+        return self
 
 
 class QuantBacktestOutSchema(BaseModel):
@@ -161,6 +180,7 @@ class QuantBacktestOutSchema(BaseModel):
     strategy_name: str = Field(description="策略类名")
     symbol: str = Field(description="交易对")
     interval: str = Field(description="K线周期")
+    market: str = Field(default="spot", description="市场：spot-现货，futures-合约")
     initial_cash: float = Field(description="初始资金")
     fee_rate: float = Field(description="手续费率")
     status: int = Field(description="状态：0=运行中，1=成功，2=失败")

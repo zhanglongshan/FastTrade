@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.response import ResponseSchema, SuccessResponse
 from app.core.base_schema import AuthSchema
-from app.core.dependencies import AuthPermission, db_getter
+from app.core.dependencies import AuthPermission, db_getter, db_getter_autocommit
 from app.core.router_class import OperationLogRoute
 
 from . import service
@@ -89,8 +89,9 @@ def build_router(market_key: str, label: str) -> APIRouter:
     async def backtest_controller(
         data: MarketBacktestCreateSchema,
         auth: Annotated[AuthSchema, Security(AuthPermission([f"{perm}:backtest:query"]))],
-        db: Annotated[AsyncSession, Depends(db_getter)],
+        db: Annotated[AsyncSession, Depends(db_getter_autocommit)],
     ):
+        # 使用不带外层 begin() 的会话：create_backtest 内部需自行 commit + refresh 分步落库。
         obj = await service.create_backtest(market_key, data, db=db, auth=auth)
         return SuccessResponse(data=bt_out(obj), msg="回测完成")
 
@@ -107,8 +108,9 @@ def build_router(market_key: str, label: str) -> APIRouter:
     async def create_live_controller(
         data: MarketLiveCreateSchema,
         auth: Annotated[AuthSchema, Security(AuthPermission([f"{perm}:live:query"]))],
-        db: Annotated[AsyncSession, Depends(db_getter)],
+        db: Annotated[AsyncSession, Depends(db_getter_autocommit)],
     ):
+        # service.create_live 内部自行 commit + refresh，须用不带外层 begin() 的会话。
         obj = await service.create_live(market_key, data, db=db, auth=auth)
         return SuccessResponse(data=live_out(obj), msg="创建成功")
 
@@ -126,8 +128,9 @@ def build_router(market_key: str, label: str) -> APIRouter:
         strategy_id: int,
         data: MarketTickSchema,
         auth: Annotated[AuthSchema, Security(AuthPermission([f"{perm}:live:query"]))],
-        db: Annotated[AsyncSession, Depends(db_getter)],
+        db: Annotated[AsyncSession, Depends(db_getter_autocommit)],
     ):
+        # service.run_tick 内部自行 commit + refresh，须用不带外层 begin() 的会话。
         obj = await service.run_tick(market_key, strategy_id, data, db=db)
         return SuccessResponse(data=live_out(obj), msg="tick 完成")
 

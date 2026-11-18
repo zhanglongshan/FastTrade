@@ -21,9 +21,9 @@ export const QuantBacktestAPI = {
     });
   },
 
-  /** 执行回测 */
+  /** 执行回测（支持多选数据集，返回每条数据集的记录） */
   run(body: QuantBacktestForm) {
-    return request<ApiResponse<QuantBacktestTable>>({
+    return request<ApiResponse<QuantBacktestTable[]>>({
       url: `${API_PATH}/backtest/run`,
       method: "post",
       data: body,
@@ -48,7 +48,9 @@ export interface QuantStrategyTable {
 }
 
 export interface QuantBacktestForm {
-  dataset_id: number;
+  /** 多选数据集 ID；旧版单数据集接口仍兼容 */
+  dataset_ids: number[];
+  dataset_id?: number;
   strategy_name: string;
   name?: string;
   initial_cash?: number;
@@ -101,6 +103,7 @@ export interface QuantBacktestTable {
   strategy_name: string;
   symbol: string;
   interval: string;
+  market: "spot" | "futures";
   initial_cash: number;
   fee_rate: number;
   status: number;

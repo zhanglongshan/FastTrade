@@ -112,9 +112,19 @@ def _write_csv_rows(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
-def _dataset_name(source: str, symbol: str, interval: str) -> str:
-    """生成稳定的数据集名称。"""
-    return f"{source}_{symbol}_{interval}".lower().replace("/", "")
+def _dataset_name(source: str, symbol: str, interval: str, market: str = "spot") -> str:
+    """生成稳定的数据集名称。
+
+    现货名称保持不变（兼容历史数据）；合约在来源未带 futures 标识时追加后缀，
+    避免同一 source 下的现货/合约同名冲突。
+    """
+    source_part = source if market != "futures" or "futures" in source else f"{source}_futures"
+    return f"{source_part}_{symbol}_{interval}".lower().replace("/", "")
+
+
+def _market_from_path(path: Path) -> str:
+    """按路径中的 futures 目录推断市场（兼容 Windows 反斜杠）。"""
+    return "futures" if "futures" in {part.lower() for part in path.parts} else "spot"
 
 
 async def upsert_dataset(
@@ -125,11 +135,12 @@ async def upsert_dataset(
     interval: str,
     file_path: Path,
     rows: list[dict[str, Any]],
+    market: str = "spot",
     description: str | None = None,
     auth: AuthSchema | None = None,
 ) -> QuantDatasetModel:
     """新增或更新数据集元数据。"""
-    name = _dataset_name(source, symbol, interval)
+    name = _dataset_name(source, symbol, interval, market)
     result = await db.execute(select(QuantDatasetModel).where(QuantDatasetModel.name == name))
     obj = result.scalar_one_or_none()
     user_id = getattr(getattr(auth, "user", None), "id", None)
@@ -138,6 +149,7 @@ async def upsert_dataset(
         "symbol": symbol,
         "interval": interval,
         "source": source,
+        "market": market,
         "file_path": _relative_path(file_path),
         "row_count": len(rows),
         "start_time": _naive_utc(ms_to_datetime(int(datetime.fromisoformat(rows[0]["date"]).timestamp() * 1000))) if rows else None,
@@ -216,6 +228,7 @@ async def download_binance_data(
             source=dataset_name_source,
             symbol=symbol,
             interval=interval,
+            market=params.market,
             file_path=file_path,
             rows=merged,
             description=params.description,
@@ -223,7 +236,7 @@ async def download_binance_data(
         )
 
     return {
-        "name": _dataset_name(dataset_name_source, symbol, interval),
+        "name": _dataset_name(dataset_name_source, symbol, interval, params.market),
         "symbol": symbol,
         "interval": interval,
         "source": params.source,
@@ -284,6 +297,7 @@ async def import_local_csv(
             source=params.source,
             symbol=params.symbol,
             interval=params.interval,
+            market=params.market,
             file_path=target_path,
             rows=merged,
             description=params.description,
@@ -291,9 +305,10 @@ async def import_local_csv(
         )
 
     return {
-        "name": _dataset_name(params.source, params.symbol, params.interval),
+        "name": _dataset_name(params.source, params.symbol, params.interval, params.market),
         "symbol": params.symbol,
         "interval": params.interval,
+        "market": params.market,
         "file_path": _relative_path(target_path),
         "imported": len(rows),
         "row_count": len(merged),
@@ -306,6 +321,7 @@ async def list_datasets(
     *,
     symbol: str | None = None,
     interval: str | None = None,
+    market: str | None = None,
     limit: int = 100,
 ) -> list[QuantDatasetModel]:
     """查询数据集列表。"""
@@ -314,6 +330,8 @@ async def list_datasets(
         stmt = stmt.where(QuantDatasetModel.symbol == symbol.replace("/", "").upper())
     if interval:
         stmt = stmt.where(QuantDatasetModel.interval == interval)
+    if market:
+        stmt = stmt.where(QuantDatasetModel.market == market)
     stmt = stmt.order_by(QuantDatasetModel.id.desc()).limit(limit)
     return list((await db.execute(stmt)).scalars().all())
 
@@ -369,6 +387,7 @@ def list_local_csv_files() -> list[dict[str, Any]]:
                     "name": path.name,
                     "size": stat.st_size,
                     "modified_time": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
+                    "market": _market_from_path(path),
                 }
             )
     return sorted(result, key=lambda item: item["modified_time"], reverse=True)

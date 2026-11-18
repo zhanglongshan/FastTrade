@@ -28,6 +28,18 @@ async def db_getter() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
+async def db_getter_autocommit() -> AsyncGenerator[AsyncSession, None]:
+    """不带外层 begin() 的数据库会话，供「service 内部自行 commit + refresh」的接口使用。
+
+    典型场景：回测这类需要分步落库（先写 running 状态，再写结果/错误）的长任务。
+    service 通过 ``await db.commit()`` / ``await db.refresh(obj)`` 自行管理事务边界；
+    若用 db_getter（带 session.begin()），内部 commit 会关闭外层事务，随后的 refresh
+    将抛 ``InvalidRequestError: Can't operate on closed transaction inside context manager``。
+    """
+    async with async_db_session() as session:
+        yield session
+
+
 async def redis_getter(request: Request) -> Redis:
     """获取Redis连接
 
