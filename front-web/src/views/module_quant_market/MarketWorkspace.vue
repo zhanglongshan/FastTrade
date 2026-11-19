@@ -68,7 +68,10 @@
             </el-form-item>
             <el-form-item label="叠加">
               <el-checkbox v-model="chartShowMa">均线</el-checkbox>
+              <el-checkbox v-model="chartShowEma">EMA</el-checkbox>
               <el-checkbox v-model="chartShowVolume">成交量</el-checkbox>
+              <el-checkbox v-model="chartShowRsi">RSI</el-checkbox>
+              <el-checkbox v-model="chartShowMfi">MFI</el-checkbox>
             </el-form-item>
             <el-form-item label="缩放">
               <el-button size="small" @click="chartRef?.zoomToLatest()">最近</el-button>
@@ -79,7 +82,10 @@
             ref="chartRef"
             :candles="chartCandles"
             :show-ma="chartShowMa"
+            :show-ema="chartShowEma"
             :show-volume="chartShowVolume"
+            :show-rsi="chartShowRsi"
+            :show-mfi="chartShowMfi"
             :height="420"
           />
           <el-table :data="chartRows" border stripe size="small" max-height="320" class="mt-3">
@@ -134,7 +140,17 @@
         <el-tab-pane :label="modeLabel" name="live">
           <el-form :model="liveForm" label-width="90px" inline>
             <el-form-item label="名称">
-              <el-input v-model="liveForm.name" style="width: 160px" />
+              <el-select
+                v-model="liveForm.name"
+                filterable
+                allow-create
+                default-first-option
+                clearable
+                placeholder="选择已有实例或输入新名称"
+                style="width: 200px"
+              >
+                <el-option v-for="n in existingLiveNames" :key="n" :label="n" :value="n" />
+              </el-select>
             </el-form-item>
             <el-form-item label="模式">
               <el-select v-model="liveForm.mode" style="width: 110px">
@@ -207,12 +223,21 @@ const datasets = ref<MarketDataset[]>([]);
 const localFiles = ref<MarketLocalFile[]>([]);
 const backtests = ref<MarketBacktest[]>([]);
 const lives = ref<MarketLive[]>([]);
+
+/** 已有实例名称（去重、去空），供「名称」下拉选择；仍可直接输入新名称 */
+const existingLiveNames = computed<string[]>(() => {
+  const names = lives.value.map((it) => String(it.name ?? "")).filter(Boolean);
+  return Array.from(new Set(names));
+});
 const chartDatasetId = ref<number | null>(null);
 const chartCandles = ref<MarketCandle[]>([]);
 const chartLimit = ref(500);
 const chartLimits = [200, 500, 1000, 2000];
 const chartShowMa = ref(true);
+const chartShowEma = ref(true);
 const chartShowVolume = ref(true);
+const chartShowRsi = ref(true);
+const chartShowMfi = ref(true);
 const chartRef = ref<{ zoomToLatest: () => void; zoomToAll: () => void } | null>(null);
 
 /** 图表明细行：附加相对前收盘的涨跌幅。 */
