@@ -50,6 +50,26 @@ python main.py quant init-menu --env=dev
 cd backend
 uv sync
 uv run main.py run --env=dev
+
+
+## 🚀 5–15 分钟本地跑起来
+
+```bash
+# 1. 克隆
+git clone https://gitee.com/stylesmile/fasttrade.git
+
+# 2. 配置环境
+cp backend/env/.env.example backend/env/.env.dev
+cp frontend/web/.env.development.example frontend/web/.env.development
+
+# 3. 启动后端（首次自动建表 + 初始化数据）
+cd backend && uv sync && uv run main.py run --env=dev
+
+# 4. 启动前端
+cd ../frontend/web && pnpm install && pnpm run dev
+
+# ✅ 浏览器打开 http://127.0.0.1:5173，用 admin/123456 登录
+```
 ```
 
 > 注意：`uv run` 默认会重新同步并修剪 optional extra。本项目所需驱动均已在核心依赖中，直接用 `uv run` 即可；若日后新增 extra 依赖，需用 `uv run --extra <name>` 或 `uv run --no-sync`。
