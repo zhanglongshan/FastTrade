@@ -30,7 +30,7 @@ FastTrade 是一个前后端分离的量化交易平台：后端基于 **FastAPI
 
 核心设计是 **策略只写一次**：同一份策略同时用于回测、模拟盘和实盘，只切换执行器；三个市场共用同一套策略目录与交易接口，只是数据源、数据表和柜台不同。管理台（用户、角色、菜单、日志、任务、存储等）作为平台底座提供，不是本项目的重点。
 
-> 完整操作手册见 [`docs/quant/README.md`](./docs/quant/README.md)。
+> 完整操作手册见 [`docs/quant/README.md`](./docs/quant/README.md)；管理后台操作文档见 [`docs/admin/README.md`](./docs/admin/README.md)。
 
 ## 🎯 量化核心能力
 
@@ -238,6 +238,7 @@ FastTrade/
 ├─ user_data/
 │  ├─ data/                       # 行情 CSV（binance / astock / futures）
 │  └─ strategies/                 # 三市场共用策略目录
+├─ docs/admin/                    # 管理后台操作与开发文档
 ├─ docs/quant/                    # 量化操作与开发文档
 └─ AGENTS.md                      # AI Agent 与协作规范
 ```
@@ -292,6 +293,14 @@ pnpm type-check
 
 ## 📚 文档
 
+- 管理后台总览与目录：[`docs/admin/README.md`](./docs/admin/README.md)
+- [登录与个性化](./docs/admin/01-登录与个性化.md)
+- [系统管理](./docs/admin/02-系统管理.md)
+- [日志与监控](./docs/admin/03-日志与监控.md)
+- [定时任务与存储](./docs/admin/04-定时任务与存储.md)
+- [运维与开发](./docs/admin/05-运维与开发.md)
+- [AI助手](./docs/admin/06-AI助手.md)
+- [权限与安全](./docs/admin/07-权限与安全.md)
 - 量化总览与目录：[`docs/quant/README.md`](./docs/quant/README.md)
 - [数据下载与导入](./docs/quant/01-数据下载与导入.md)
 - [策略开发](./docs/quant/02-策略开发.md)
