@@ -251,7 +251,7 @@ async def tick_live_strategy_controller(
     返回 | Returns:
         ResponseSchema[dict]: 含 tick 结果字典的响应 | Response with the tick result dict.
     """
-    result = await run_strategy_tick(strategy_id, db=db)  # 调用服务运行一次 tick | Call service to run one tick
+    result = await run_strategy_tick(strategy_id, db=db, force=True)  # 手动运行绕过多实例占位，强制跑一次 | Manual runs bypass the multi-instance claim
     return SuccessResponse(data=result.to_dict(), msg="运行完成")  # 将结果转字典并包装响应 | Convert result to dict and wrap response
 
 

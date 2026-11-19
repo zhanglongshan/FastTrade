@@ -91,6 +91,12 @@ export interface QuantAccountSnapshot {
   short_proceeds: number;
   realized_pnl: number;
   total_fee: number;
+  /** 杠杆倍数，1 表示现货全额 */
+  leverage?: number;
+  /** 已占用保证金 */
+  margin_used?: number;
+  /** 是否已被强制平仓 */
+  liquidated?: boolean;
 }
 
 export interface QuantTickResult {
@@ -114,6 +120,10 @@ export interface QuantTickResult {
   rejected: string[];
   error: string | null;
   tick_time: string;
+  /** 本次运行生效的杠杆倍数 */
+  leverage?: number;
+  /** 当前持仓的理论强平价，0 表示不适用 */
+  liquidation_price?: number;
 }
 
 export interface QuantLiveStrategyTable {
@@ -126,6 +136,8 @@ export interface QuantLiveStrategyTable {
   initial_cash: number;
   fee_rate: number;
   slippage: number;
+  /** 杠杆倍数，1 表示现货全额 */
+  leverage: number;
   dry_run: boolean;
   allow_short: boolean;
   status: number;
@@ -147,6 +159,8 @@ export interface QuantLiveStrategyForm {
   initial_cash?: number;
   fee_rate?: number;
   slippage?: number;
+  /** 杠杆倍数，1=现货，>1=合约保证金（净值跌破维持保证金会被强平） */
+  leverage?: number;
   dry_run?: boolean;
   allow_short?: boolean;
   api_key?: string | null;

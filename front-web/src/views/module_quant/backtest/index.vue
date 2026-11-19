@@ -52,13 +52,25 @@
         <el-form-item label="滑点">
           <el-input-number v-model="form.slippage" :min="0" :max="0.1" :step="0.0001" :precision="4" style="width: 140px" />
         </el-form-item>
+        <el-form-item label="杠杆">
+          <el-input-number
+            v-model="form.leverage"
+            :min="1"
+            :max="125"
+            :step="1"
+            :precision="0"
+            :disabled="market !== 'futures'"
+            style="width: 120px"
+          />
+          <span class="ml-2 text-xs text-gray-500">{{ market === 'futures' ? `${form.leverage}x` : '现货固定 1x' }}</span>
+        </el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="running" @click="handleRun">开始回测</el-button>
         </el-form-item>
       </el-form>
       <div class="text-xs text-gray-500">
         当前市场可选 {{ datasetOptions.length }} 个数据集，已选 {{ selectedIds.length }} 个；每个数据集独立回测并生成一条记录。
-        现货禁止开空，合约允许开空。
+        现货禁止开空且固定 1 倍全额；合约允许开空，杠杆越高保证金占用越少、强平越近。
       </div>
       <div v-if="strategies.length === 0" class="text-xs text-orange-500">
         未发现策略。请在 user_data/strategies 下添加继承 Strategy 的 .py 文件。
@@ -101,6 +113,13 @@
               {{ activeMetrics.trade_count }} / {{ formatPercent(activeMetrics.win_rate) }}
             </div>
           </div>
+        </div>
+        <div class="flex items-center gap-4 text-xs text-gray-500 mb-2">
+          <span>杠杆：{{ formatLeverage(activeMetrics.leverage) }}</span>
+          <span v-if="activeMetrics.liquidation_price">
+            期末强平价：{{ activeMetrics.liquidation_price.toFixed(2) }}
+          </span>
+          <span v-if="activeMetrics.liquidated" class="text-red-500">本次回测触发过强制平仓</span>
         </div>
         <div class="mb-4">
           <div class="text-xs text-gray-500 mb-1">净值曲线（{{ activeEquity.length }} 个点）</div>
@@ -147,6 +166,9 @@
         </el-table-column>
         <el-table-column prop="strategy_name" label="策略" width="160" />
         <el-table-column prop="symbol" label="交易对" width="120" />
+        <el-table-column label="杠杆" width="80">
+          <template #default="{ row }">{{ formatLeverage(row.leverage) }}</template>
+        </el-table-column>
         <el-table-column prop="status" label="状态" width="90">
           <template #default="{ row }">
             <span :class="row.status === 1 ? 'text-green-600' : row.status === 2 ? 'text-red-500' : 'text-orange-500'">
@@ -203,6 +225,7 @@ const form = ref({
   initial_cash: 10000,
   fee_rate: 0.001,
   slippage: 0.0,
+  leverage: 1,
 });
 const running = ref(false);
 const listLoading = ref(false);
@@ -236,6 +259,9 @@ const statusText = (status: number): string => (status === 1 ? "成功" : status
 
 /** 百分比格式化。 */
 const formatPercent = (value: number): string => `${(value * 100).toFixed(2)}%`;
+
+/** 杠杆文案：1 倍即现货全额，其余显示为 Nx。 */
+const formatLeverage = (value?: number | null): string => (value && value > 0 ? `${value}x` : "1x");
 
 /** 成交方向中文。 */
 const sideText = (side: string): string =>
@@ -297,6 +323,8 @@ const handleRun = async () => {
       initial_cash: form.value.initial_cash,
       fee_rate: form.value.fee_rate,
       slippage: form.value.slippage,
+      // 杠杆只对合约数据集有意义，现货后端会强制为 1，这里提前收敛避免歧义
+      leverage: market.value === "futures" ? form.value.leverage : 1,
     });
     results.value = res?.data ?? [];
     activeResultId.value = String(results.value[0]?.id ?? "");

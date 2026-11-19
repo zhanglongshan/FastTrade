@@ -15,8 +15,8 @@ from app.config.path_conf import (  # 导入项目路径配置 | Import project 
     QUANT_BINANCE_DIR,  # 币安数据存放目录 | Binance data directory
     QUANT_DATA_DIR,  # 量化数据存放目录 | Quant data directory
 )  # 路径配置导入结束 | End of path config import
-from app.core.base_schema import AuthSchema  # 导入认证信息模型 | Import the auth schema
 from app.core.base_model import MappedBase  # 导入 ORM 声明基类 | Import the ORM declarative base
+from app.core.base_schema import AuthSchema  # 导入认证信息模型 | Import the auth schema
 from app.core.exceptions import CustomException  # 导入业务异常类 | Import the business exception class
 from app.utils.import_util import ImportUtil  # 导入模型自动发现工具 | Import the model auto-discovery utility
 

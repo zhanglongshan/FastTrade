@@ -71,6 +71,10 @@ async def create_backtests(
     results: list[QuantBacktestModel] = []  # 收集所有回测记录 | Accumulate all backtest records
     for dataset in datasets:  # 逐数据集执行回测 | Iterate over datasets and run a backtest for each
         market = _market_of(dataset)  # 判断该数据集的市场类型 | Determine the dataset's market type
+        # 杠杆只对合约有意义：现货数据集即便传了 10 倍也强制为 1，避免"现货 + 保证金记账"的怪口径
+        # Leverage only makes sense on futures: a spot dataset is forced to 1x so the run never
+        # mixes the spot and margin accounting models.
+        leverage = params.leverage if market == "futures" else 1.0  # 实际生效的杠杆 | Effective leverage
         if params.name:  # 用户提供了自定义名称 | User supplied a custom name
             name = f"{params.name}_{dataset.symbol}_{dataset.interval}" if multi else params.name  # 多选时附加交易对与周期以区分 | Append pair and interval when multi to distinguish records
         else:  # 未提供名称，自动生成 | No name given, generate automatically
@@ -84,6 +88,7 @@ async def create_backtests(
             market=market,  # 市场类型 | Market type
             initial_cash=params.initial_cash,  # 初始资金 | Initial capital
             fee_rate=params.fee_rate,  # 手续费率 | Fee rate
+            leverage=leverage,  # 杠杆倍数（现货为 1）| Leverage (1 for spot)
             status=0,  # 状态 0=运行中 | Status 0 = running
             started_time=_naive_utc(),  # 记录开始时间 | Record start time
             description=params.description,  # 备注 | Description
@@ -108,6 +113,7 @@ async def create_backtests(
                 slippage=params.slippage,  # 滑点比例 | Slippage ratio
                 # 现货不允许做空，合约允许 | Spot disallows shorting; futures allows it
                 allow_short=market == "futures",  # 仅合约允许做空 | Only futures markets allow shorting
+                leverage=leverage,  # 杠杆倍数（合约生效，现货 1 倍）| Leverage (applies to futures, 1x on spot)
             )  # 回测执行结束 | End of backtest call
         except Exception as exc:  # noqa: BLE001 - 任何失败都要落库，便于页面排查 | Any failure must be persisted for UI diagnosis
             obj.status = 2  # 标记失败 | Mark as failed

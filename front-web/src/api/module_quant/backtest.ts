@@ -56,6 +56,8 @@ export interface QuantBacktestForm {
   initial_cash?: number;
   fee_rate?: number;
   slippage?: number;
+  /** 杠杆倍数，1=现货全额，>1=合约保证金（仅合约数据集生效） */
+  leverage?: number;
   description?: string;
 }
 
@@ -95,6 +97,12 @@ export interface QuantBacktestResult {
   logs: string[];
   candle_count: number;
   warmup_candles: number;
+  /** 实际生效的杠杆倍数（现货恒为 1） */
+  leverage?: number;
+  /** 期末理论强平价，0 表示不适用 */
+  liquidation_price?: number;
+  /** 是否触发过强制平仓 */
+  liquidated?: boolean;
 }
 
 export interface QuantBacktestTable {
@@ -106,6 +114,8 @@ export interface QuantBacktestTable {
   market: "spot" | "futures";
   initial_cash: number;
   fee_rate: number;
+  /** 回测使用的杠杆倍数 */
+  leverage: number;
   status: number;
   result: QuantBacktestResult | null;
   error: string | null;

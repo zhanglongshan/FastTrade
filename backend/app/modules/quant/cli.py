@@ -468,7 +468,7 @@ def live_tick_command(
         流程 / Logic: 进入会话上下文，await 运行 tick 并调用 to_dict 导出 | Enter the session context, await the tick run and export via to_dict.
         """
         async with async_db_session() as db:  # 获取异步数据库会话 | Acquire an async database session
-            return (await run_strategy_tick(strategy_id, db=db, candles=candles)).to_dict()  # 运行 tick 并导出为字典 | Run the tick and export to a dict
+            return (await run_strategy_tick(strategy_id, db=db, candles=candles, force=True)).to_dict()  # 运行 tick 并导出为字典（CLI 属手动触发，绕过多实例占位）| Run the tick and export a dict (a manual CLI run bypasses the multi-instance claim)
 
     _print_json(asyncio.run(_run()))  # 同步运行协程并以 JSON 打印结果 | Run the coroutine synchronously and print the result as JSON
 

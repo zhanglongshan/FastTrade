@@ -185,6 +185,7 @@ class QuantBacktestCreateSchema(BaseModel):
     initial_cash: float = Field(default=10000.0, gt=0, description="初始资金")  # 初始资金，必须 > 0 | Initial capital, must be > 0
     fee_rate: float = Field(default=0.001, ge=0, le=0.1, description="单边手续费率，0.001=0.1%")  # 单边手续费率，0~0.1 | One-way fee rate, 0~0.1
     slippage: float = Field(default=0.0, ge=0, le=0.1, description="滑点比例，0.001=0.1%")  # 滑点比例，0~0.1 | Slippage ratio, 0~0.1
+    leverage: float = Field(default=1.0, ge=1, le=125, description="杠杆倍数，1=现货全额，10=10 倍杠杆（仅合约数据集生效）")  # 杠杆倍数 | Leverage multiple
     description: str | None = Field(default=None, description="备注")  # 备注 | Description
 
     @model_validator(mode="after")  # 模型级校验器，在所有字段校验之后运行 | Model-level validator, runs after all field validators
@@ -219,6 +220,7 @@ class QuantBacktestOutSchema(BaseModel):
     market: str = Field(default="spot", description="市场：spot-现货，futures-合约")  # 市场类型 | Market type
     initial_cash: float = Field(description="初始资金")  # 初始资金 | Initial capital
     fee_rate: float = Field(description="手续费率")  # 手续费率 | Fee rate
+    leverage: float = Field(default=1.0, description="回测使用的杠杆倍数（现货恒为 1）")  # 杠杆倍数 | Leverage used
     status: int = Field(description="状态：0=运行中，1=成功，2=失败")  # 回测状态 | Backtest status
     result: dict[str, Any] | None = Field(default=None, description="回测结果")  # 回测结果，可空 | Backtest result, optional
     error: str | None = Field(default=None, description="失败原因")  # 失败原因 | Error message
@@ -238,6 +240,7 @@ class QuantLiveStrategyCreateSchema(QuantIntervalValidatorMixin):
     initial_cash: float = Field(default=10000.0, gt=0, description="初始/虚拟资金")  # 初始/虚拟资金，> 0 | Initial/virtual capital, > 0
     fee_rate: float = Field(default=0.001, ge=0, le=0.1, description="单边手续费率")  # 单边手续费率 | One-way fee rate
     slippage: float = Field(default=0.0, ge=0, le=0.1, description="滑点比例")  # 滑点比例 | Slippage ratio
+    leverage: float = Field(default=1.0, ge=1, le=125, description="杠杆倍数，1=现货，>1=合约保证金交易（净值跌破维持保证金会被强平）")  # 杠杆倍数 | Leverage multiple
     dry_run: bool = Field(default=True, description="实盘是否模拟运行，True 不下真实单")  # 是否模拟运行 | Simulated run flag
     allow_short: bool = Field(default=True, description="是否允许做空，实盘现货建议 False")  # 是否允许做空 | Whether shorting is allowed
     api_key: str | None = Field(default=None, description="币安 API Key（仅实盘真实下单需要，加密存储）")  # API Key（加密存储）| Encrypted API key
@@ -290,6 +293,7 @@ class QuantLiveStrategyOutSchema(BaseModel):
     initial_cash: float = Field(description="初始/虚拟资金")  # 初始/虚拟资金 | Initial/virtual capital
     fee_rate: float = Field(description="手续费率")  # 手续费率 | Fee rate
     slippage: float = Field(description="滑点比例")  # 滑点比例 | Slippage ratio
+    leverage: float = Field(default=1.0, description="杠杆倍数，1 表示现货全额")  # 杠杆倍数 | Leverage multiple
     dry_run: bool = Field(description="是否模拟运行")  # 是否模拟运行 | Simulated run flag
     allow_short: bool = Field(description="是否允许做空")  # 是否允许做空 | Whether shorting is allowed
     status: int = Field(description="状态：0=停止，1=运行，2=异常")  # 实例状态 | Instance status

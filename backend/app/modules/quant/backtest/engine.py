@@ -14,8 +14,11 @@ from pathlib import Path  # 导入 Path，用于文件路径操作 | Import Path
 from typing import Any  # 导入 Any，用于结果字典的宽松类型标注 | Import Any for loose typing of the result dict
 
 from app.core.exceptions import CustomException  # 导入业务异常类，用于统一抛出可展示给前端的错误 | Import business exception for user-facing errors
+from app.core.logger import logger  # 导入日志对象，用于模式冲突告警 | Import logger for mode-conflict warnings
 
+from ..execution.risk import RiskSettings  # 导入风控配置（与实盘共享）| Import risk settings shared with live mode
 from ..strategy.api import Candle, Strategy, TradeAPI  # 导入 K 线、策略基类与交易 API（回测撮合核心）| Import Candle, Strategy base and TradeAPI (matching core)
+from ..strategy.trading_base import bar_is_closed, parse_bar_time  # 导入收盘判定与时间解析 | Import the bar-closure check and timestamp parser
 
 CSV_COLUMNS = ["date", "open", "high", "low", "close", "volume"]  # CSV 必需的六列：时间/开/高/低/收/量 | Required CSV columns: date/open/high/low/close/volume
 
@@ -56,7 +59,18 @@ def load_candles(path: Path) -> list[Candle]:
                 raise CustomException(msg=f"CSV 第 {line_no} 行格式无效：{exc}") from exc  # 带上行号抛异常便于定位 | Raise with the line number for easier diagnosis
     if not candles:  # 没有任何有效数据行 | No valid data rows were parsed
         raise CustomException(msg="数据集为空，无法回测")  # 空数据集无法回测 | Empty dataset cannot be backtested
-    return sorted(candles, key=lambda item: item.date)  # 按日期字符串升序返回（ISO 时间字符串可直接字典序比较）| Return sorted by date (ISO strings sort lexicographically)
+    # 去重：同一时间戳出现两次通常来自"增量下载后追加"或分区间合并，会让指标在同一根 K 线上
+    # 重复计算，且成交记录出现重复行。按时间戳保留最后一条（后写覆盖先写）。
+    # Deduplicate: a repeated timestamp usually comes from appending an incremental download or from
+    # merging chunked files; it makes indicators count the same bar twice and duplicates fills.
+    # The last row wins, matching "later write overwrites earlier".
+    unique: dict[str, Candle] = {}  # 时间戳 -> K 线 | Timestamp -> candle
+    for candle in candles:  # 逐根归并 | Merge bar by bar
+        unique[candle.date] = candle  # 后写覆盖先写 | Later rows overwrite earlier ones
+    duplicates = len(candles) - len(unique)  # 被覆盖的重复行数 | Number of overwritten duplicates
+    if duplicates:  # 有重复时告警 | Warn when duplicates were found
+        logger.warning(f"回测数据存在 {duplicates} 条形重复时间戳，已按时间戳去重（保留最后一条）")  # 记录告警 | Log a warning
+    return sorted(unique.values(), key=lambda item: item.date)  # 按日期字符串升序返回 | Return sorted by date
 
 
 def _last_signal(signals: list[int], index: int) -> int:
@@ -93,17 +107,55 @@ def _max_drawdown(curve: list[dict[str, Any]]) -> float:
     return worst  # 返回最大回撤 | Return the maximum drawdown
 
 
+def _infer_mode(strategy_cls: type[Strategy]) -> str:  # 按策略实现推断运行模式 | Infer the run mode from the strategy implementation
+    """按策略实际重写的方法推断运行模式 | Infer the run mode from the overridden methods.
+
+    目的 | Purpose:
+        事件模式策略只重写 ``on_bar``，信号列模式策略只重写 ``populate_entry_trend`` /
+        ``populate_exit_trend``。若用错模式，引擎会调用未被重写的空实现，
+        结果是 0 笔成交且没有任何报错——本函数用于消除这种静默失败。
+        Event-mode strategies only override ``on_bar``; signal-mode ones only override
+        ``populate_entry_trend`` / ``populate_exit_trend``. Using the wrong mode drives an empty
+        base implementation, which silently yields zero trades; this helper removes that trap.
+
+    参数 | Parameters:
+        strategy_cls (type[Strategy]): 待实例化的策略类 | Strategy class to be instantiated.
+
+    返回 | Returns:
+        str: "event" 或 "signal" | Either "event" or "signal".
+
+    流程 | Flow:
+        检查 on_bar 是否被重写 → 检查 populate_* 是否被重写 → 按命中情况返回；
+        两者都重写或都不重写时优先事件模式（与现有示例策略一致）。
+        Check whether on_bar is overridden → check populate_* → return accordingly;
+        when both or neither are overridden, prefer event mode (consistent with the samples).
+    """
+    has_event = getattr(strategy_cls, "on_bar", None) is not Strategy.on_bar  # 是否重写了事件回调 | Whether the event callback is overridden
+    has_signal = (  # 是否重写了信号列方法 | Whether the signal-column methods are overridden
+        getattr(strategy_cls, "populate_entry_trend", None) is not Strategy.populate_entry_trend  # 入场信号列 | Entry signal column
+        or getattr(strategy_cls, "populate_exit_trend", None) is not Strategy.populate_exit_trend  # 出场信号列 | Exit signal column
+    )
+    if has_event and not has_signal:  # 仅事件回调 | Event callback only
+        return "event"  # 事件模式 | Event mode
+    if has_signal and not has_event:  # 仅信号列 | Signal columns only
+        return "signal"  # 信号模式 | Signal mode
+    return "event"  # 歧义或都未重写时优先事件模式 | Prefer event mode when ambiguous or unoverridden
+
+
 def run_backtest(
     candles: list[Candle],
     strategy_cls: type[Strategy],
     *,
-    mode: str,
+    mode: str | None = None,  # event-事件回调，signal-信号列；None 时按策略实现自动推断 | "event"/"signal"; None infers from the strategy
     symbol: str,
     interval: str,
     initial_cash: float = 10000.0,
     fee_rate: float = 0.001,
     slippage: float = 0.0,
     allow_short: bool = True,
+    leverage: float = 1.0,  # 杠杆倍数，1 表示现货全额，>1 表示合约保证金交易 | Leverage; 1 is spot, >1 is margin
+    min_notional: float = 0.0,  # 交易所最小名义金额，0 表示不约束 | Exchange minimum notional, 0 disables the check
+    final_fill_basis: str = "close",  # 末根未成交订单处理：close-按收盘撮合，skip-直接放弃 | Final-bar handling: close or skip
 ) -> dict[str, Any]:
     """执行回测并返回结果摘要 | Run a backtest and return a result summary.
 
@@ -117,6 +169,18 @@ def run_backtest(
         fee_rate (float): 单边手续费率 | One-way fee rate.
         slippage (float): 滑点比例 | Slippage ratio.
         allow_short (bool): 是否允许开空；现货回测传 False | Whether shorting is allowed; pass False for spot.
+        leverage (float): 杠杆倍数；1 表示全额（现货口径），>1 时按保证金记账并在
+            净值跌破维持保证金时强平 | Leverage; 1 is fully funded (spot), >1 books margin and
+            liquidates once equity breaches the maintenance margin.
+        min_notional (float): 交易所最小名义金额。>0 时低于该值的订单直接取消并记日志，
+            使回测能复现实盘"碎单被拒"的行为；0 表示不校验
+            | Venue minimum notional. Above 0, dust orders are cancelled and logged so the backtest
+            reproduces the live rejection; 0 disables the check.
+        final_fill_basis (str): 最后一根 K 线的信号无法等到"下一根开盘"。``close`` 按该根收盘
+            价撮合（旧行为，便于与历史结果对比）；``skip`` 直接放弃，与实盘"必须有下一根才能成交"
+            的语义一致 | Signals on the last bar have no next open. ``close`` fills at that bar's
+            close (legacy, keeps historical results comparable); ``skip`` drops them, matching live
+            semantics where a fill always needs the following bar.
 
     返回 | Returns:
         dict[str, Any]: 收益、回撤、成交明细与净值曲线 | Returns, drawdown, trade details and equity curve.
@@ -124,21 +188,78 @@ def run_backtest(
     if len(candles) < 2:  # 至少需要两根 K 线（一根信号一根成交）| Need at least two candles (one for signal, one for execution)
         raise CustomException(msg="至少需要 2 根 K 线才能回测")  # K 线数量不足 | Not enough candles
 
+    # 收盘守卫：实盘只会用已收盘 K 线算信号，回测若把最后一根"正在形成"的 K 线也当成已收盘，
+    # 就等于用尚未走完的收盘价出信号并撮合——典型未来函数。数据文件通常是"下载到此刻"，
+    # 末根往往正好是形成中的那根，所以这里必须先丢弃（至少保留两根）。
+    # Closure guard: live only ever uses closed bars. Treating a forming last bar as closed means
+    # signalling and filling on a price that has not finished forming — textbook look-ahead. Data
+    # files are usually downloaded "up to now", so the last bar often is exactly that forming bar.
+    dropped_unclosed = 0  # 被丢弃的未收盘根数 | Number of dropped unclosed bars
+    # 只检查最后一根：只有它能是"正在形成"的。若整份数据都晚于当前时钟（时区/伪造数据），
+    # 逐根丢弃会把数据集清空，因此这里只丢一根，并且时间无法解析时不做任何丢弃。
+    # Only the last bar can be forming. If the whole file looks "future-dated" (timezone issues or
+    # synthetic data), dropping repeatedly would empty the dataset, so exactly one bar is dropped and
+    # nothing happens when the timestamp cannot be parsed.
+    if len(candles) > 2 and parse_bar_time(str(candles[-1].date)) is not None:  # 时间可解析才判断 | Only judge parseable timestamps
+        if not bar_is_closed(str(candles[-1].date), interval):  # 末根未收盘 | The last bar is still forming
+            candles = candles[:-1]  # 丢弃末根 | Drop it
+            dropped_unclosed = 1  # 计数 | Count it
+    if dropped_unclosed:  # 有丢弃时记录，便于用户核对数据 | Log so users can verify their data
+        logger.warning(f"回测数据末 {dropped_unclosed} 根 K 线尚未收盘，已丢弃以避免未来函数")  # 记录告警 | Log a warning
+    if len(candles) < 2:  # 丢弃后不足两根 | Not enough bars after dropping
+        raise CustomException(msg="有效 K 线不足 2 根（末根未收盘已被丢弃），无法回测")  # 抛出业务异常 | Raise a business error
+    if slippage <= 0:  # 未配置滑点会让回测系统性偏乐观 | Zero slippage makes results optimistic
+        logger.warning("回测滑点配置为 0：成交价等于理论价，结果通常偏乐观，建议按点差/冲击成本设置")  # 记录告警 | Log a warning
+    if final_fill_basis not in {"close", "skip"}:  # 口径只允许两种取值 | Only two bases are supported
+        final_fill_basis = "close"  # 非法值回退到兼容行为 | Fall back to the legacy behaviour
+    if leverage > 1 and not allow_short:  # 现货数据集不允许开杠杆：保证金口径下"只做多"没有意义，也容易误解
+        # 现货数据集的杠杆会被服务层强制为 1，这里再兜一层，避免直接调用引擎时出现口径混淆
+        # Leverage is meaningless on a spot dataset and is forced to 1 by the service layer;
+        # this guard keeps direct engine callers from mixing the two accounting models.
+        leverage = 1.0  # 强制退化为现货口径 | Fall back to the spot basis
+
     api = TradeAPI(  # 创建交易 API，封装撮合与账本 | Create the TradeAPI that encapsulates matching and accounting
         candles,  # K 线序列 | Candle series
         initial_cash=initial_cash,  # 初始资金 | Initial capital
         fee_rate=fee_rate,  # 手续费率 | Fee rate
         slippage=slippage,  # 滑点比例 | Slippage ratio
         allow_short=allow_short,  # 是否允许做空 | Whether shorting is allowed
+        risk=RiskSettings.from_strategy(strategy_cls),  # 从策略类读取风控配置，与实盘同一份 | Read risk config from the strategy class, shared with live
+        allow_add=bool(getattr(strategy_cls, "allow_position_add", False)),  # 是否允许重复开仓 | Whether pyramiding is allowed
+        leverage=leverage,  # 杠杆倍数 | Leverage
     )  # TradeAPI 创建结束 | End of TradeAPI creation
+    api.min_notional = max(0.0, float(min_notional or 0.0))  # 注入交易所最小名义金额 | Inject the venue minimum notional
     strategy = strategy_cls()  # 实例化用户策略 | Instantiate the user strategy
     warmup = max(0, int(getattr(strategy_cls, "startup_candle_count", 0) or 0))  # 预热根数：前 warmup 根不产生信号 | Warmup bars: no signals in the first warmup candles
     metadata = {"pair": symbol, "interval": interval}  # 传给信号模式策略的元数据 | Metadata passed to signal-mode strategies
+
+    # 解析运行模式：未显式传入时按策略实际实现推断（重写 on_bar => event，
+    # 只重写 populate_* 系列 => signal）。显式传入但与该实现冲突时给出告警，
+    # 因为"事件模式策略按信号列回测"会静默产生 0 笔成交，极难排查。
+    # Resolve the run mode: when omitted, infer it from what the strategy actually
+    # implements (overriding on_bar => event, only populate_* => signal). Warn on an
+    # explicit conflict, because running an event-mode strategy in signal mode
+    # silently yields zero trades, which is very hard to diagnose.
+    inferred_mode = _infer_mode(strategy_cls)  # 按策略实现推断模式 | Infer the mode from the implementation
+    if mode is None:  # 未指定时采用推断值 | Use the inferred value when omitted
+        mode = inferred_mode  # 采用推断模式 | Adopt the inferred mode
+    elif mode != inferred_mode:  # 显式指定且与实现冲突 | Explicit value conflicts with the implementation
+        logger.warning(  # 记录告警，提示可能 0 成交 | Warn about a likely zero-trade run
+            f"回测模式({mode})与策略 {strategy_cls.__name__} 的实现({inferred_mode})不一致，"  # 说明冲突 | Describe the conflict
+            f"可能产生 0 笔成交；建议传 mode='{inferred_mode}' 或省略该参数"  # 给出建议 | Suggest the fix
+        )  # 告警结束 | End of warning
 
     try:  # 包裹策略执行，统一转换异常 | Wrap strategy execution to normalize exceptions
         for index in range(len(candles)):  # 逐根 K 线推进（事件驱动主循环）| Advance candle by candle (main event-driven loop)
             api.set_index(index)  # 告诉 API 当前处理到第几根（决定成交可见范围）| Tell the API the current index (controls execution visibility)
             api.execute_pending(index)  # 执行上一根挂起的信号单（下一根开盘成交）| Execute pending orders from the previous bar (fill at next open)
+
+            # 风控优先于信号：先用本根区间更新移动止损极值，再判定止损与回撤熔断
+            # Risk runs before signals: update trailing extremes with this bar's range, then evaluate stops.
+            candle = candles[index]  # 当前 K 线 | Current candle
+            api.mark(candle.close, candle.low, candle.high)  # 更新持仓期极值与净值峰值 | Update holding extremes and the equity peak
+            for risk_order, risk_price in api.risk_orders(candle.open, candle.low, candle.high):  # 遍历触发的强平单 | Iterate triggered forced exits
+                api.execute_now(risk_order, risk_price)  # 当根立即撮合（含跳空处理）| Fill immediately on this bar (gap-adjusted)
 
             if index >= warmup:  # 过了预热期才运行策略逻辑 | Only run strategy logic after the warmup period
                 if mode == "event":  # 事件回调模式 | Event callback mode
@@ -167,9 +288,17 @@ def run_backtest(
     except Exception as exc:  # noqa: BLE001 - 用户策略异常需要回传给前端展示 | User strategy errors must be returned to the frontend
         raise CustomException(msg=f"策略执行失败：{type(exc).__name__}: {exc}") from exc  # 包装成业务异常并保留原始异常链 | Wrap into a business exception preserving the cause
 
-    # 最后一根 K 线产生的信号无法在下一根开盘成交，按最后收盘价撮合 | Signals on the last candle can't fill at a next open, so match at the last close
+    # 最后一根 K 线产生的信号没有"下一根开盘"可成交。默认仍按该根收盘价撮合（旧行为，
+    # 保证历史回测结果可复现）；传 skip 则直接放弃，与实盘"必须有下一根才能成交"完全一致。
+    # Signals on the last bar have no next open. The default still fills at that bar's close (legacy
+    # behaviour, keeps historical results reproducible); passing "skip" drops them, exactly like live.
     api.set_index(len(candles) - 1)  # 定位到最后一根 K 线 | Point to the last candle
-    api.execute_pending(len(candles) - 1, final=True)  # 强制以最后收盘价撮合所有挂单 | Force-fill all pending orders at the final close
+    if final_fill_basis == "close":  # 兼容口径：按收盘撮合 | Legacy basis: fill at the close
+        api.execute_pending(len(candles) - 1, final=True)  # 强制以最后收盘价撮合所有挂单 | Force-fill all pending orders at the final close
+    else:  # 严格口径：末根信号直接放弃 | Strict basis: drop the last bar's signals
+        if api.pending_count:  # 有待办订单时记录 | Log when something was dropped
+            api.log(f"末根 K 线仍有 {api.pending_count} 笔挂单，按 skip 口径放弃（无下一根可成交）")  # 记录放弃原因 | Log the reason
+        api.execute_pending(len(candles) - 1, drop=True)  # 清空队列且不成交 | Clear the queue without filling
     api.equity_curve[-1] = {  # 用最终账户状态覆盖最后一点净值快照 | Overwrite the last equity point with the final account state
         "date": candles[-1].date,  # 最后一根 K 线日期 | Date of the last candle
         "equity": round(api.equity, 6),  # 最终总权益，保留 6 位小数 | Final total equity, rounded to 6 decimals
@@ -205,4 +334,18 @@ def run_backtest(
         "logs": api.logs,  # 交易日志 | Trading logs
         "candle_count": len(candles),  # K 线总数 | Total number of candles
         "warmup_candles": warmup,  # 预热根数 | Number of warmup candles
+        "dropped_unclosed": dropped_unclosed,  # 被丢弃的未收盘根数 | Dropped unclosed bars
+        "fill_basis": "next_open",  # 常规成交口径：下一根开盘 | Regular fill basis: next open
+        "final_fill_basis": final_fill_basis,  # 末根口径：close/skip | Final-bar basis
+        "min_notional": api.min_notional,  # 生效的最小名义金额 | Effective minimum notional
+        "slippage_assumption": slippage,  # 本次使用的滑点假设，便于审计乐观程度 | Slippage assumption for auditability
+        "leverage": api.leverage,  # 实际生效的杠杆倍数（服务层可能把现货强制为 1）| Effective leverage
+        "liquidation_price": round(api.liquidation_price, 8),  # 期末理论强平价，0 表示不适用 | Closing liquidation price, 0 when N/A
+        "liquidated": api.ledger.liquidated,  # 是否发生过强制平仓 | Whether a liquidation happened
+        "risk": {  # 本次回测生效的风控配置，便于核对与实盘是否一致 | Effective risk config for auditability
+            "stoploss": api.ledger.risk.stoploss,  # 固定止损 | Fixed stoploss
+            "trailing_stop": api.ledger.risk.trailing_stop,  # 移动止损 | Trailing stop
+            "max_drawdown": api.ledger.risk.max_drawdown,  # 回撤熔断 | Drawdown breaker
+            "allow_position_add": api.allow_add,  # 是否允许加仓 | Whether pyramiding is allowed
+        },  # 风控配置结束 | End of risk config
     }  # 结果字典结束 | End of result dictionary

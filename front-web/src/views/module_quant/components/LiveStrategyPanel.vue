@@ -51,6 +51,20 @@
         <el-form-item label="手续费率">
           <el-input-number v-model="form.fee_rate" :min="0" :max="0.1" :step="0.0001" :precision="4" style="width: 130px" />
         </el-form-item>
+        <el-form-item label="杠杆">
+          <el-input-number
+            v-model="form.leverage"
+            :min="1"
+            :max="125"
+            :step="1"
+            :precision="0"
+            :disabled="mode === 'live' && !form.dry_run"
+            style="width: 110px"
+          />
+          <span class="ml-2 text-xs text-gray-500">
+            {{ mode === 'live' && !form.dry_run ? '实盘现货固定 1x' : (form.leverage ?? 1) > 1 ? '合约保证金，跌破维持保证金即强平' : '1x 现货全额' }}
+          </span>
+        </el-form-item>
         <el-form-item label="做空">
           <el-switch v-model="form.allow_short" />
         </el-form-item>
@@ -88,6 +102,9 @@
         <el-table-column prop="strategy_name" label="策略" width="150" />
         <el-table-column prop="symbol" label="交易对" width="100" />
         <el-table-column prop="interval" label="周期" width="70" />
+        <el-table-column label="杠杆" width="70">
+          <template #default="{ row }">{{ formatLeverage(row.leverage) }}</template>
+        </el-table-column>
         <el-table-column label="净值/收益" width="150">
           <template #default="{ row }">
             <template v-if="row.account">
@@ -149,7 +166,12 @@
       </div>
       <div v-if="current.last_result" class="mb-4">
         <div class="text-xs text-gray-500 mb-1">
-          最近 tick：价格 {{ current.last_result.price }} · 净值 {{ current.last_result.equity }} · {{ current.last_result.tick_time }}
+          最近 tick：价格 {{ current.last_result.price }} · 净值 {{ current.last_result.equity }} · 杠杆
+          {{ formatLeverage(current.last_result.leverage ?? current.leverage) }}
+          <template v-if="(current.last_result.liquidation_price ?? 0) > 0">
+            · 强平价 {{ current.last_result.liquidation_price!.toFixed(2) }}
+          </template>
+          · {{ current.last_result.tick_time }}
         </div>
         <pre class="p-2 bg-gray-50 border rounded text-xs overflow-auto max-h-32">{{ (current.last_result.logs || []).join("\n") || "（无策略日志）" }}</pre>
         <div v-if="current.last_result.error" class="text-xs text-red-500 mt-1">{{ current.last_result.error }}</div>
@@ -198,6 +220,7 @@ const form = ref<QuantLiveStrategyForm>({
   initial_cash: 10000,
   fee_rate: 0.001,
   slippage: 0,
+  leverage: 1,
   allow_short: props.mode === "paper",
   dry_run: true,
   api_key: "",
@@ -213,6 +236,8 @@ const existingNames = computed<string[]>(() => {
 });
 
 const formatPercent = (value: number): string => `${(value * 100).toFixed(2)}%`;
+/** 杠杆文案：1 倍即现货全额。 */
+const formatLeverage = (value?: number | null): string => (value && value > 0 ? `${value}x` : "1x");
 const statusText = (status: number): string => (status === 1 ? "运行中" : status === 2 ? "异常" : "已停止");
 const statusClass = (status: number): string =>
   status === 1 ? "text-green-600" : status === 2 ? "text-red-500" : "text-gray-500";
@@ -243,7 +268,12 @@ const handleCreate = async () => {
   }
   creating.value = true;
   try {
-    await QuantLiveAPI.create(form.value);
+    // 实盘真实下单走现货撮合，后端会强制 1 倍；这里提前收敛，避免库里存着用不上的杠杆值
+    const payload: QuantLiveStrategyForm = {
+      ...form.value,
+      leverage: props.mode === "live" && !form.value.dry_run ? 1 : (form.value.leverage ?? 1),
+    };
+    await QuantLiveAPI.create(payload);
     ElMessage.success("实例创建成功");
     await fetchList();
   } finally {

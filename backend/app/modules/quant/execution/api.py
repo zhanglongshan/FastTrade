@@ -25,6 +25,7 @@ from typing import Any  # 导入 Any 类型 | Import Any for generic dict/value 
 
 from ..strategy.api import Candle  # 导入 Candle K 线类型 | Import Candle candle data type
 from ..strategy.indicators import ema, rsi, sma  # 导入指标函数 | Import ema/rsi/sma indicator functions
+from ..strategy.trading_base import can_add_position, sizing_qty  # 导入共享决策基元 | Import shared trading primitives
 from .base import AccountLedger, OrderRequest  # 导入账本与订单请求 | Import AccountLedger and OrderRequest
 
 
@@ -54,6 +55,8 @@ class StrategyAPI:
         index: int = 0,  # 当前 K 线下标 | Current candle index
         timestamp: str = "",  # 日志/成交时间标签 | Log/fill timestamp label
         allow_short: bool = True,  # 是否允许做空 | Whether shorting is allowed
+        allow_add: bool = False,  # 是否允许同一信号重复开仓 | Whether repeated entries are allowed
+        bar_ts: str = "",  # 当前信号所在 K 线时间戳（幂等用）| Signal bar timestamp for idempotency
     ) -> None:  # 构造器无返回值 | Constructor returns None
         """初始化策略接口 | Initialize the strategy API.
 
@@ -87,6 +90,15 @@ class StrategyAPI:
         self.symbol = ""  # 初始化交易对字符串为空 | Initialize trading symbol to empty string
         self.timestamp = timestamp  # 保存时间标签 | Store the timestamp label
         self.allow_short = allow_short  # 保存是否允许做空的开关 | Store the shorting-allowed flag
+        self.allow_add = allow_add  # 保存是否允许重复开仓的开关 | Store the pyramiding flag
+        self.bar_ts = bar_ts or timestamp  # 保存当前信号 bar 时间戳 | Store the signal bar timestamp
+        self._seq = 0  # 下单序号，用于生成唯一 client_order_id | Order sequence for unique client order ids
+        self._pending_qty: dict[str, float] = {"buy": 0.0, "sellshort": 0.0}  # 未成交挂单数量（门控用）| Unfilled quantities per entry side
+        # 已受理但尚未成交的平仓数量：反手（先平后开）时用来提前释放同向持仓，
+        # 否则同一 tick 内 sell 只是入队、持仓还没变，紧接着的 buy 会被门控误拒。
+        # Accepted-but-unfilled closing quantities: they release the same-side position early so a
+        # reversal (exit then entry) is not blocked by the gate while the sell is still queued.
+        self._pending_close: dict[str, float] = {"sell": 0.0, "buycover": 0.0}  # 待成交平仓量 | Pending closing quantities
         self.logs: list[str] = []  # 初始化策略日志列表 | Initialize strategy log list
         self.rejected_orders: list[str] = []  # 初始化被拒订单记录列表 | Initialize rejected-order list
         if self.candles:  # 仅当存在 K 线窗口时才校正下标 | Only normalize index when a candle window exists
@@ -130,6 +142,24 @@ class StrategyAPI:
         return candle.close if candle else 0.0  # 有 K 线返回收盘价，否则 0.0 | Return close or 0.0
 
     @property  # 声明属性装饰器 | Declare property decorator
+    def bar_close(self) -> float:  # 信号 K 线收盘价访问器 | Signal bar close accessor
+        """信号 K 线的收盘价（与回测的 ``current_price`` 同义）| Close of the signal bar.
+
+        目的 | Purpose:
+            实盘的 ``current_price`` 是"下一根开盘价/盘口价"（成交口径），而回测的
+            ``current_price`` 是"当前 K 线收盘价"。策略若用它判断信号，两边结论会不同。
+            需要与回测完全同义的价格时请用本属性。
+            In live, ``current_price`` is the next-open/market price used for fills, while in the
+            backtest it is the current bar's close. A strategy reading it would therefore behave
+            differently per mode; this property always returns the signal bar's close.
+
+        返回 | Returns:
+            float: 当前信号 K 线收盘价；无 K 线时返回 0.0 | Signal bar close, or 0.0 without candles.
+        """
+        candle = self.current_candle  # 取当前信号 K 线 | Take the signal candle
+        return candle.close if candle else 0.0  # 返回收盘价 | Return its close
+
+    @property  # 声明属性装饰器 | Declare property decorator
     def equity(self) -> float:  # 账户净值访问器 | Account equity accessor
         """账户净值 | Account equity.
 
@@ -155,6 +185,63 @@ class StrategyAPI:
         - dict[str, float]: 账本当前多空持仓字典 | Current long/short position dict from ledger.
         """
         return self.ledger.position()  # 委托账本返回持仓快照 | Delegate to ledger for position snapshot
+
+    @property  # 声明属性装饰器 | Declare property decorator
+    def halted(self) -> bool:  # 是否已触发回撤熔断 | Whether the drawdown breaker tripped
+        """是否已触发回撤熔断（代理账本）| Whether the drawdown breaker tripped (ledger proxy).
+
+        返回 | Returns:
+        - bool: 熔断中返回 True | True while halted.
+        """
+        return self.ledger.halted  # 读取账本熔断标志 | Read the ledger halt flag
+
+    @property  # 声明属性装饰器 | Declare property decorator
+    def leverage(self) -> float:  # 杠杆倍数 | Leverage multiple
+        """当前杠杆倍数（1 表示现货）| Current leverage (1 means spot).
+
+        返回 | Returns:
+        - float: 杠杆倍数 | Leverage multiple.
+        """
+        return self.ledger.leverage  # 读取账本杠杆 | Read the ledger leverage
+
+    @property  # 声明属性装饰器 | Declare property decorator
+    def margin_used(self) -> float:  # 已占用保证金 | Used margin
+        """已占用保证金 | Locked margin.
+
+        返回 | Returns:
+        - float: 名义本金 / 杠杆 | Notional divided by leverage.
+        """
+        return self.ledger.margin_used()  # 委托账本计算 | Delegate to the ledger
+
+    @property  # 声明属性装饰器 | Declare property decorator
+    def liquidation_price(self) -> float:  # 理论强平价 | Theoretical liquidation price
+        """理论强平价，0 表示不适用 | Liquidation price, 0 when not applicable.
+
+        返回 | Returns:
+        - float: 强平触发价 | Liquidation trigger price.
+        """
+        return self.ledger.liquidation_price()  # 委托账本计算 | Delegate to the ledger
+
+    def _can_enter(self, side: str, current_qty: float) -> bool:  # 开仓门控 | Entry gate
+        """判断该方向是否允许再开一笔仓 | Decide whether another entry on this side is allowed.
+
+        目的：把"同一信号重复开仓"挡住，实盘每个 tick、回测每根 K 线都只建一笔仓。
+        Purpose: block repeated entries so one signal opens at most one position per tick/bar.
+
+        参数 | Parameters:
+        - side: 入场方向 buy/sellshort | Entry side.
+        - current_qty: 当前同方向持仓 | Current same-side position.
+
+        返回 | Returns:
+        - bool: 允许开仓返回 True | True when an entry is allowed.
+        """
+        pending = self._pending_qty.get(side, 0.0)  # 取该方向未成交挂单量 | Pending quantity on that side
+        # 本 tick 已受理但未成交的平仓单会释放同向持仓，先扣掉再判门控，否则反手信号必然被拒
+        # Closing orders accepted in this tick free the same-side position once they fill, so
+        # subtract them first; otherwise a reversal signal is always rejected.
+        closing = self._pending_close.get("sell" if side == "buy" else "buycover", 0.0)  # 待成交平仓量 | Pending closing qty
+        available = max(0.0, float(current_qty) - float(closing))  # 成交后同向持仓 | Same-side position after the close
+        return can_add_position(available, pending, self.allow_add)  # 复用共享门控规则 | Reuse the shared gate rule
 
     def log(self, message: str) -> None:  # 记录策略日志 | Record a strategy log
         """记录策略日志 | Record a strategy log.
@@ -226,7 +313,14 @@ class StrategyAPI:
             return False  # 返回校验失败 | Return validation failure
         return True  # 返回校验通过 | Return validation success
 
-    def _emit(self, side: str, qty: float, signal_price: float, reason: str) -> bool:  # 构造订单并交给执行器 | Build order and submit
+    def _emit(  # 构造订单并交给执行器 | Build an order and hand it to the executor
+        self,
+        side: str,  # 交易方向 | Order side
+        qty: float,  # 数量（按比例开仓时为信号价口径的预估）| Quantity (estimate at the signal price)
+        signal_price: float,  # 信号价格 | Signal price
+        reason: str,  # 下单原因 | Order reason
+        qty_ratio: float = 0.0,  # 按比例开仓的比例，0 表示固定数量 | Entry ratio, 0 for a fixed quantity
+    ) -> bool:  # 返回是否受理 | Whether accepted
         """构造订单请求并交给执行器 | Build an order request and hand it to the executor.
 
         目的：校验数量、封装 OrderRequest、调用 ``submit`` 回调并记录被拒订单。
@@ -237,6 +331,9 @@ class StrategyAPI:
         - qty (float): 数量 | Quantity.
         - signal_price (float): 信号价格 | Signal price.
         - reason (str): 下单原因 | Reason for the order.
+        - qty_ratio (float): 按比例开仓的比例；>0 时执行器会用成交价重算数量，
+          保证与回测"在成交价上定仓"的口径一致
+          | Entry ratio; when >0 the executor re-sizes at the fill price, matching the backtest.
 
         返回 | Returns:
         - bool: 订单是否被受理 | Whether the order was accepted.
@@ -248,17 +345,46 @@ class StrategyAPI:
         if qty <= 0:  # 数量非正时拒绝下单 | Reject when quantity is not positive
             self.log(f"{side} 数量必须大于 0")  # 记录数量非法日志 | Log invalid quantity message
             return False  # 返回下单失败 | Return submission failure
+        self._seq += 1  # 递增下单序号 | Bump the order sequence
+        # 自定义订单号：策略 + 交易对 + 信号 bar + 序号，重试/重启时可据此去重
+        # Custom order id: symbol + signal bar + sequence, usable for de-duplication on retry/restart.
+        client_order_id = self._make_client_id(side)  # 生成幂等订单号 | Build the idempotent order id
         request = OrderRequest(  # 构造订单请求对象 | Build the order request object
             side=side,  # 设置交易方向 | Set order side
             qty=qty,  # 设置数量 | Set quantity
             signal_price=float(signal_price),  # 设置并转换信号价格为 float | Set and convert signal price to float
             reason=reason,  # 设置下单原因 | Set order reason
             symbol=getattr(self, "symbol", ""),  # 读取交易对，缺失回退空串 | Read symbol, fallback to empty
+            client_order_id=client_order_id,  # 注入幂等订单号 | Inject the idempotent order id
+            qty_ratio=max(0.0, float(qty_ratio)),  # 按比例开仓的比例（成交价重算用）| Entry ratio for fill-price sizing
         )
         accepted = bool(self._submit(request))  # 调用下单回调并转为布尔受理结果 | Invoke callback and coerce to bool
+        if accepted and side in self._pending_qty:  # 入场单受理后累计未成交量 | Accumulate pending entry quantity
+            self._pending_qty[side] += qty  # 累加该方向挂单量 | Add to the side's pending quantity
+        if accepted and side in self._pending_close:  # 平仓单受理后累计待释放量 | Accumulate pending closing quantity
+            self._pending_close[side] += qty  # 累加待成交平仓量 | Add to the pending closing quantity
         if not accepted:  # 订单被拒绝时记录 | Record when the order is rejected
             self.rejected_orders.append(f"{side}@{signal_price:.8g}")  # 追加被拒订单摘要 | Append rejected-order summary
         return accepted  # 返回受理结果 | Return acceptance result
+
+    def _make_client_id(self, side: str) -> str:  # 生成幂等订单号 | Build an idempotent client order id
+        """生成符合币安规则（≤36 字符、仅字母数字与 -_）的订单号 | Build a Binance-safe client order id.
+
+        目的 | Purpose:
+            交易所重试或多进程重启时，同一根 K 线的同一笔信号只会产生一个订单号，
+            便于后续用 ``newClientOrderId`` 做幂等去重。
+            On retries or restarts, one signal on one bar yields one id, so ``newClientOrderId``
+            can be used for idempotent de-duplication.
+
+        参数 | Parameters:
+            - side: 订单方向 | Order side.
+
+        返回 | Returns:
+            - str: 订单号字符串 | Client order id string.
+        """
+        raw_ts = "".join(ch for ch in str(self.bar_ts) if ch.isalnum())  # 只保留字母数字，去掉冒号/加号 | Keep alnum chars only
+        base = f"{getattr(self, 'symbol', '') or 'sym'}-{raw_ts or 'na'}-{side}-{self._seq}"  # 组装可读订单号 | Assemble a readable order id
+        return base[:36]  # 截断到币安长度上限 | Truncate to the Binance limit
 
     def buy(  # 开多/加多 | Open/increase long
         self,  # 实例自身引用 | Instance reference
@@ -280,16 +406,28 @@ class StrategyAPI:
         """
         if not self._validate_ratio(ratio):  # 校验仓位比例，失败则中止 | Validate ratio, abort on failure
             return False  # 返回下单失败 | Return submission failure
+        if self.ledger.halted:  # 熔断后禁止开新仓 | No new entries after a drawdown halt
+            self.log("已触发最大回撤熔断，忽略开仓信号")  # 记录熔断拦截 | Log the halt rejection
+            return False  # 返回下单失败 | Return submission failure
+        if not self._can_enter("buy", self.ledger.long_qty):  # 开仓门控：已有持仓/挂单则拒绝 | Entry gate: reject when already long or pending
+            self.log("已有多头持仓或挂单，忽略重复开仓信号")  # 记录重复开仓拦截 | Log the duplicate-entry rejection
+            return False  # 返回下单失败 | Return submission failure
         signal_price = float(price or self.current_price)  # 确定信号价：显式价格或当前价并转 float | Resolve signal price
         if signal_price <= 0:  # 价格非正时拒绝 | Reject non-positive price
             self.log("买入价格必须大于 0")  # 记录价格非法日志 | Log invalid price message
             return False  # 返回下单失败 | Return submission failure
-        qty = (  # 计算买入数量 | Compute buy quantity
-            self.cash * ratio / (signal_price * (1 + self.ledger.fee_rate + self.ledger.slippage))  # 按现金比例折算可买数量（含手续费与滑点）| Size from cash ratio including fee and slippage
+        qty = (  # 计算买入数量（预估值，撮合时会按成交价重算）| Estimate buy quantity; re-sized at fill
+            # 购买力口径：1 倍杠杆等于可用现金（旧口径），>1 倍时等于可用保证金×杠杆
+            # Buying power: cash at 1x (legacy) and free margin × leverage above it.
+            sizing_qty(self.ledger.entry_budget(self.current_price or signal_price, side="buy"), ratio, self.current_price or signal_price, self.ledger.fee_rate, self.ledger.slippage)  # 复用共享数量换算 | Reuse shared sizing
             if amount is None  # 未指定数量时走比例计算分支 | Branch when amount not specified
             else float(amount)  # 指定数量时直接转换使用 | Branch when amount specified
         )
-        return self._emit("buy", qty, signal_price, reason)  # 构造并提交买入订单 | Build and submit buy order
+        # qty_ratio>0 表示"按比例开仓"：执行器必须用真实成交价重新计算数量，
+        # 否则策略显式传入的 price 会改变定仓基准，与回测口径产生偏差。
+        # qty_ratio>0 marks a ratio-sized entry: the executor re-sizes at the real fill price, so an
+        # explicit `price` can no longer shift the sizing basis away from the backtest's.
+        return self._emit("buy", qty, signal_price, reason, qty_ratio=ratio if amount is None else 0.0)  # 提交买入订单 | Submit the buy order
 
     def sell(  # 平多/减多 | Close/reduce long
         self,  # 实例自身引用 | Instance reference
@@ -340,16 +478,24 @@ class StrategyAPI:
             return False  # 返回下单失败 | Return submission failure
         if not self._validate_ratio(ratio):  # 校验仓位比例，失败则中止 | Validate ratio, abort on failure
             return False  # 返回下单失败 | Return submission failure
+        if self.ledger.halted:  # 熔断后禁止开新仓 | No new entries after a drawdown halt
+            self.log("已触发最大回撤熔断，忽略开空信号")  # 记录熔断拦截 | Log the halt rejection
+            return False  # 返回下单失败 | Return submission failure
+        if not self._can_enter("sellshort", self.ledger.short_qty):  # 开仓门控：已有空头持仓/挂单则拒绝 | Entry gate for shorts
+            self.log("已有空头持仓或挂单，忽略重复开空信号")  # 记录重复开空拦截 | Log the duplicate-short rejection
+            return False  # 返回下单失败 | Return submission failure
         signal_price = float(price or self.current_price)  # 确定信号价：显式价格或当前价并转 float | Resolve signal price
         if signal_price <= 0:  # 价格非正时拒绝 | Reject non-positive price
             self.log("开空价格必须大于 0")  # 记录价格非法日志 | Log invalid price message
             return False  # 返回下单失败 | Return submission failure
-        qty = (  # 计算开空数量 | Compute short quantity
-            self.equity * ratio / (signal_price * (1 + self.ledger.fee_rate + self.ledger.slippage))  # 按净值比例折算可开空数量（含手续费与滑点）| Size from equity ratio including fee and slippage
+        qty = (  # 计算开空数量（预估值，撮合时按成交价重算）| Estimate short quantity; re-sized at fill
+            # 1 倍杠杆退化为"净值×比例"，>1 倍时按可用保证金×杠杆
+            # At 1x this degrades to equity × ratio; above 1x it uses free margin × leverage.
+            sizing_qty(self.ledger.entry_budget(self.current_price or signal_price, side="sellshort"), ratio, self.current_price or signal_price, self.ledger.fee_rate, self.ledger.slippage)  # 复用共享数量换算 | Reuse shared sizing
             if amount is None  # 未指定数量时走比例计算分支 | Branch when amount not specified
             else float(amount)  # 指定数量时直接转换使用 | Branch when amount specified
         )
-        return self._emit("sellshort", qty, signal_price, reason)  # 构造并提交开空订单 | Build and submit short order
+        return self._emit("sellshort", qty, signal_price, reason, qty_ratio=ratio if amount is None else 0.0)  # 提交开空订单 | Submit the short order
 
     def buycover(  # 平空 | Cover short
         self,  # 实例自身引用 | Instance reference

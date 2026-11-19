@@ -64,6 +64,9 @@ class QuantBacktestModel(ModelMixin, UserMixin):
     )  # market 字段结束 | End of market field
     initial_cash: Mapped[float] = mapped_column(Float, nullable=False, default=10000.0, comment="初始资金")  # 初始资金，默认 10000 | Initial capital, defaults to 10000
     fee_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.001, comment="单边手续费率")  # 单边手续费率，默认 0.1% | One-way fee rate, defaults to 0.1%
+    # 杠杆倍数：1 表示现货全额，>1 表示合约保证金交易；现货数据集即使传了值也会被服务层强制为 1
+    # Leverage: 1 is fully funded spot, >1 is margin trading; the service layer forces spot datasets to 1.
+    leverage: Mapped[float] = mapped_column(Float, nullable=False, default=1.0, server_default="1", comment="杠杆倍数，1=现货全额")  # 杠杆倍数，默认 1 | Leverage, defaults to 1x
     status: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="状态：0=运行中，1=成功，2=失败")  # 回测状态，默认运行中 | Backtest status, defaults to running
     result: Mapped[dict | None] = mapped_column(JSONType, nullable=True, default=None, comment="回测结果 JSON")  # 回测结果 JSON，可空 | Backtest result JSON, nullable
     error: Mapped[str | None] = mapped_column(Text, nullable=True, default=None, comment="失败原因")  # 失败原因文本，可空 | Failure reason text, nullable
@@ -93,6 +96,7 @@ class QuantLiveStrategyModel(ModelMixin, UserMixin):
     initial_cash: Mapped[float] = mapped_column(Float, nullable=False, default=10000.0, comment="初始/虚拟资金")  # 初始或虚拟资金 | Initial/virtual capital
     fee_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.001, comment="单边手续费率")  # 单边手续费率 | One-way fee rate
     slippage: Mapped[float] = mapped_column(Float, nullable=False, default=0.0, comment="滑点比例")  # 滑点比例，默认 0 | Slippage ratio, defaults to 0
+    leverage: Mapped[float] = mapped_column(Float, nullable=False, default=1.0, server_default="1", comment="杠杆倍数，1=现货全额")  # 杠杆倍数，默认 1 | Leverage, defaults to 1x
     dry_run: Mapped[bool] = mapped_column(nullable=False, default=True, comment="实盘是否模拟运行：True 不下真实单")  # 是否模拟运行，True 不下真实单 | Simulated run; True means no real orders
     allow_short: Mapped[bool] = mapped_column(nullable=False, default=True, comment="是否允许做空（实盘现货建议关闭）")  # 是否允许做空 | Whether shorting is allowed
     status: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="状态：0=停止，1=运行，2=异常")  # 实例状态，默认停止 | Instance status, defaults to stopped
