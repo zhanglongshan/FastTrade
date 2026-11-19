@@ -33,7 +33,10 @@
         </el-form-item>
         <el-form-item label="叠加">
           <el-checkbox v-model="showMa">均线</el-checkbox>
+          <el-checkbox v-model="showEma">EMA</el-checkbox>
           <el-checkbox v-model="showVolume">成交量</el-checkbox>
+          <el-checkbox v-model="showRsi">RSI</el-checkbox>
+          <el-checkbox v-model="showMfi">MFI</el-checkbox>
         </el-form-item>
         <el-form-item label="缩放">
           <el-button size="small" @click="klineRef?.zoomToLatest()">最近</el-button>
@@ -61,7 +64,10 @@
         ref="klineRef"
         :candles="result?.candles ?? []"
         :show-ma="showMa"
+        :show-ema="showEma"
         :show-volume="showVolume"
+        :show-rsi="showRsi"
+        :show-mfi="showMfi"
         :height="480"
       />
     </el-card>
@@ -117,7 +123,10 @@ const datasetId = ref<number | null>(null);
 const limit = ref(500);
 const limits = [200, 500, 1000, 2000];
 const showMa = ref(true);
+const showEma = ref(true);
 const showVolume = ref(true);
+const showRsi = ref(true);
+const showMfi = ref(true);
 const loading = ref(false);
 const result = ref<{ symbol: string; interval: string; total: number; candles: QuantCandle[] } | null>(null);
 const klineRef = ref<{ zoomToLatest: () => void; zoomToAll: () => void } | null>(null);
