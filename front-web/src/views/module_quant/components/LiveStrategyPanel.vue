@@ -20,7 +20,17 @@
       </template>
       <el-form :model="form" label-width="96px" inline>
         <el-form-item label="实例名称">
-          <el-input v-model="form.name" placeholder="如 BTC-1h-SMA" style="width: 180px" />
+          <el-select
+            v-model="form.name"
+            filterable
+            allow-create
+            default-first-option
+            clearable
+            placeholder="选择已有实例或输入新名称"
+            style="width: 200px"
+          >
+            <el-option v-for="n in existingNames" :key="n" :label="n" :value="n" />
+          </el-select>
         </el-form-item>
         <el-form-item label="策略">
           <el-select v-model="form.strategy_name" filterable placeholder="选择策略" style="width: 200px">
@@ -159,7 +169,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import QuantLiveAPI, {
   type QuantLiveStrategyForm,
@@ -195,6 +205,12 @@ const form = ref<QuantLiveStrategyForm>({
 });
 
 type LiveRow = Record<string, any>;
+
+/** 已有实例名称（去重、去空），供「实例名称」下拉选择；仍可直接输入新名称 */
+const existingNames = computed<string[]>(() => {
+  const names = items.value.map((it) => String(it.name ?? "")).filter(Boolean);
+  return Array.from(new Set(names));
+});
 
 const formatPercent = (value: number): string => `${(value * 100).toFixed(2)}%`;
 const statusText = (status: number): string => (status === 1 ? "运行中" : status === 2 ? "异常" : "已停止");
