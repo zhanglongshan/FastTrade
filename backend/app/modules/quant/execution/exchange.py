@@ -41,6 +41,105 @@ DEFAULT_KLINE_LIMIT = 300  # 默认拉取 K 线根数 | Default number of candle
 ORDER_FINAL_STATUS = {"FILLED", "CANCELED", "REJECTED", "EXPIRED"}  # 订单终态集合 | Terminal order statuses
 
 
+def _empty_symbol_rules() -> dict[str, float | str]:  # 空规则：全部按"无约束"处理 | Empty rules: everything unconstrained
+    """构造"无约束"的交易对规则 | Build an unconstrained rule set.
+
+    返回 | Returns:
+        dict[str, float | str]: 所有过滤器为 0 / 空串 | All filters zeroed or blank.
+    """
+    return {  # 默认规则 | Default rules
+        "base_asset": "",  # 基础资产 | Base asset
+        "quote_asset": "",  # 计价资产 | Quote asset
+        "tick_size": 0.0,  # 价格最小变动 | Price tick
+        "step_size": 0.0,  # 限价/默认数量步长 | Limit/default quantity step
+        "min_qty": 0.0,  # 最小数量 | Minimum quantity
+        "max_qty": 0.0,  # 最大数量 | Maximum quantity
+        "market_step_size": 0.0,  # 市价单数量步长 | Market-order quantity step
+        "market_min_qty": 0.0,  # 市价单最小数量 | Market-order minimum quantity
+        "market_max_qty": 0.0,  # 市价单最大数量 | Market-order maximum quantity
+        "min_notional": 0.0,  # 最小名义额 | Minimum notional
+        "max_notional": 0.0,  # 最大名义额（0 表示无限制）| Maximum notional (0 means unlimited)
+    }
+
+
+def _parse_symbol_item(item: dict[str, Any]) -> dict[str, float | str]:  # 解析单个交易对的过滤器 | Parse one symbol's filters
+    """把 exchangeInfo 的单个交易对条目解析成规则字典 | Turn one exchangeInfo symbol entry into a rule dict.
+
+    参数 | Parameters:
+        item (dict[str, Any]): exchangeInfo.symbols 中的一项 | One entry of exchangeInfo.symbols.
+
+    返回 | Returns:
+        dict[str, float | str]: 与 :func:`_empty_symbol_rules` 同结构的规则 | Rules shaped like the empty rule set.
+    """
+    info = _empty_symbol_rules()  # 先取无约束默认值 | Start from the unconstrained defaults
+    info["base_asset"] = str(item.get("baseAsset") or "")  # 基础资产 | Base asset
+    info["quote_asset"] = str(item.get("quoteAsset") or "")  # 计价资产 | Quote asset
+    for rule in item.get("filters", []) or []:  # 遍历过滤器 | Iterate over filters
+        kind = str(rule.get("filterType") or "")  # 过滤器类型 | Filter type
+        if kind == "PRICE_FILTER":  # 价格精度 | Price precision
+            info["tick_size"] = float(rule.get("tickSize") or 0.0)  # 记录最小价格变动 | Record the tick size
+        elif kind == "LOT_SIZE":  # 默认数量规则 | Default quantity rules
+            info["step_size"] = float(rule.get("stepSize") or 0.0)  # 记录步长 | Record the step
+            info["min_qty"] = float(rule.get("minQty") or 0.0)  # 记录最小数量 | Record the minimum
+            info["max_qty"] = float(rule.get("maxQty") or 0.0)  # 记录最大数量 | Record the maximum
+        elif kind == "MARKET_LOT_SIZE":  # 市价单专用数量规则 | Market-order quantity rules
+            info["market_step_size"] = float(rule.get("stepSize") or 0.0)  # 市价步长 | Market step
+            info["market_min_qty"] = float(rule.get("minQty") or 0.0)  # 市价最小量 | Market minimum
+            info["market_max_qty"] = float(rule.get("maxQty") or 0.0)  # 市价最大量 | Market maximum
+        elif kind in {"MIN_NOTIONAL", "NOTIONAL"}:  # 名义额限制（新旧两种过滤器名）| Notional filters (old and new names)
+            info["min_notional"] = float(rule.get("minNotional") or rule.get("notional") or 0.0)  # 最小名义额 | Minimum notional
+            info["max_notional"] = float(rule.get("maxNotional") or 0.0)  # 最大名义额 | Maximum notional
+    return info  # 返回解析结果 | Return the parsed rules
+
+
+_RULES_CACHE: dict[str, tuple[float, dict[str, float | str], bool]] = {}  # 交易对 -> (取到时刻, 规则, 是否成功) | Symbol -> (fetched_at, rules, ok)
+_RULES_TTL_OK = 3600.0  # 成功结果缓存 1 小时（过滤器极少变动）| Cache successes for an hour
+_RULES_TTL_FAIL = 60.0  # 失败结果只缓存 1 分钟，避免每秒重试 | Cache failures briefly to avoid hammering
+
+
+async def symbol_rules(symbol: str) -> dict[str, float | str]:  # 异步获取交易对规则（带缓存）| Fetch symbol rules asynchronously with a cache
+    """异步查询交易对过滤器规则，供模拟盘与实盘共同使用 | Fetch venue filters for both paper and live modes.
+
+    目的 | Purpose:
+        模拟盘此前完全不校验交易所规则，能成交实盘必被拒的碎单，两种模式结果不可比。
+        这里提供一份带进程缓存的异步查询：命中缓存是纯内存读，不阻塞事件循环；
+        失败时退化为"无约束"并短时缓存，避免把网络故障放大成交易中断。
+        Paper mode previously ignored venue filters and filled dust the live account never could.
+        This gives both modes one cached, asynchronous lookup: cache hits are pure memory reads,
+        and failures degrade to "unconstrained" with a short cache so a network hiccup does not
+        turn into a trading outage.
+
+    参数 | Parameters:
+        symbol (str): 交易对，如 BTC/USDT 或 BTCUSDT | Symbol such as BTC/USDT or BTCUSDT.
+
+    返回 | Returns:
+        dict[str, float | str]: 规则字典；失败时所有过滤器为 0 | Rule dict; all filters zero on failure.
+    """
+    key = str(symbol or "").replace("/", "").upper()  # 统一成交易所写法 | Normalize to the venue's form
+    if not key:  # 空交易对直接返回空规则 | Empty symbol yields empty rules
+        return _empty_symbol_rules()  # 无约束 | Unconstrained
+    cached = _RULES_CACHE.get(key)  # 读缓存 | Read the cache
+    now = time.monotonic()  # 单调时钟，避免系统时间跳变 | Monotonic clock, immune to wall-clock jumps
+    if cached is not None:  # 命中缓存时按成功/失败区分 TTL | Distinguish TTL by outcome
+        fetched_at, rules, ok = cached  # 解包 | Unpack
+        if now - fetched_at < (_RULES_TTL_OK if ok else _RULES_TTL_FAIL):  # 未过期 | Still fresh
+            return rules  # 直接返回 | Return the cached rules
+    try:  # 查询失败不应中断交易 | A failed lookup must not stop trading
+        async with httpx.AsyncClient(timeout=10.0, headers={"User-Agent": "FastTradeQuant/1.0"}) as client:  # 异步客户端 | Async client
+            response = await client.get(BINANCE_EXCHANGE_INFO_URL, params={"symbol": key})  # 请求规则 | Request the rules
+            response.raise_for_status()  # 校验状态 | Check the status
+            payload = response.json()  # 解析 JSON | Parse the JSON
+        item = (payload.get("symbols") or [{}])[0]  # 取第一个交易对 | Take the first symbol entry
+        rules = _parse_symbol_item(item)  # 解析过滤器 | Parse the filters
+        _RULES_CACHE[key] = (now, rules, True)  # 缓存成功结果 | Cache the success
+        return rules  # 返回规则 | Return the rules
+    except (httpx.HTTPError, ValueError, IndexError) as exc:  # 网络/格式异常 | Network or shape error
+        logger.warning(f"交易规则异步查询失败({symbol})：{type(exc).__name__}: {exc}")  # 记录告警 | Log a warning
+        rules = _empty_symbol_rules()  # 退化为无约束 | Degrade to unconstrained
+        _RULES_CACHE[key] = (now, rules, False)  # 短时缓存失败结果 | Cache the failure briefly
+        return rules  # 返回空规则 | Return empty rules
+
+
 def fetch_klines(  # 同步拉取最新 K 线 | Fetch latest candles synchronously
     symbol: str,  # 交易对，如 BTCUSDT | Trading symbol, e.g. BTCUSDT
     interval: str,  # K 线周期 | Candle interval
@@ -490,42 +589,14 @@ class BinanceOrderClient:  # 币安现货下单客户端 | Binance spot order cl
             return cached  # 返回缓存结果 | Return the cached rules
         if not hasattr(self, "_symbol_cache"):  # 首次调用时初始化缓存字典 | Initialize the cache on first use
             self._symbol_cache: dict[str, dict[str, float | str]] = {}  # 创建缓存容器 | Create the cache container
-        info: dict[str, float | str] = {  # 默认规则：全部按"无约束"处理 | Default rules: everything unconstrained
-            "base_asset": "",  # 基础资产 | Base asset
-            "quote_asset": "",  # 计价资产 | Quote asset
-            "tick_size": 0.0,  # 价格最小变动 | Price tick
-            "step_size": 0.0,  # 限价/默认数量步长 | Limit/default quantity step
-            "min_qty": 0.0,  # 最小数量 | Minimum quantity
-            "max_qty": 0.0,  # 最大数量 | Maximum quantity
-            "market_step_size": 0.0,  # 市价单数量步长 | Market-order quantity step
-            "market_min_qty": 0.0,  # 市价单最小数量 | Market-order minimum quantity
-            "market_max_qty": 0.0,  # 市价单最大数量 | Market-order maximum quantity
-            "min_notional": 0.0,  # 最小名义额 | Minimum notional
-            "max_notional": 0.0,  # 最大名义额（0 表示无限制）| Maximum notional (0 means unlimited)
-        }
+        info: dict[str, float | str] = _empty_symbol_rules()  # 默认规则：全部按"无约束"处理 | Default rules: everything unconstrained
         try:  # 规则查询失败不应阻塞交易，仅退化为不规整 | Rule lookup failure must not block trading
             with httpx.Client(timeout=20.0, headers={"User-Agent": "FastTradeQuant/1.0"}) as client:  # 创建客户端 | Create a client
                 response = client.get(BINANCE_EXCHANGE_INFO_URL, params={"symbol": symbol})  # 请求交易规则 | Request the trading rules
                 response.raise_for_status()  # 校验状态 | Check status
                 payload = response.json()  # 解析 JSON | Parse JSON
             item = (payload.get("symbols") or [{}])[0]  # 取第一个交易对 | Take the first symbol entry
-            info["base_asset"] = str(item.get("baseAsset") or "")  # 基础资产 | Base asset
-            info["quote_asset"] = str(item.get("quoteAsset") or "")  # 计价资产 | Quote asset
-            for rule in item.get("filters", []) or []:  # 遍历过滤器 | Iterate over filters
-                kind = str(rule.get("filterType") or "")  # 过滤器类型 | Filter type
-                if kind == "PRICE_FILTER":  # 价格精度 | Price precision
-                    info["tick_size"] = float(rule.get("tickSize") or 0.0)  # 记录最小价格变动 | Record the tick size
-                elif kind == "LOT_SIZE":  # 默认数量规则 | Default quantity rules
-                    info["step_size"] = float(rule.get("stepSize") or 0.0)  # 记录步长 | Record the step
-                    info["min_qty"] = float(rule.get("minQty") or 0.0)  # 记录最小数量 | Record the minimum
-                    info["max_qty"] = float(rule.get("maxQty") or 0.0)  # 记录最大数量 | Record the maximum
-                elif kind == "MARKET_LOT_SIZE":  # 市价单专用数量规则 | Market-order quantity rules
-                    info["market_step_size"] = float(rule.get("stepSize") or 0.0)  # 市价步长 | Market step
-                    info["market_min_qty"] = float(rule.get("minQty") or 0.0)  # 市价最小量 | Market minimum
-                    info["market_max_qty"] = float(rule.get("maxQty") or 0.0)  # 市价最大量 | Market maximum
-                elif kind in {"MIN_NOTIONAL", "NOTIONAL"}:  # 名义额限制（新旧两种过滤器名）| Notional filters (old and new names)
-                    info["min_notional"] = float(rule.get("minNotional") or rule.get("notional") or 0.0)  # 最小名义额 | Minimum notional
-                    info["max_notional"] = float(rule.get("maxNotional") or 0.0)  # 最大名义额 | Maximum notional
+            info = _parse_symbol_item(item)  # 复用统一解析器，避免两处逐字段漂移 | Reuse the shared parser so both paths stay identical
         except (httpx.HTTPError, ValueError, IndexError) as exc:  # 查询失败时记录并退化为默认规则 | Log and fall back on failure
             logger.warning(f"交易规则查询失败({symbol})：{exc}")  # 记录告警 | Log a warning
         self._symbol_cache[symbol] = info  # 写入缓存 | Store in the cache
