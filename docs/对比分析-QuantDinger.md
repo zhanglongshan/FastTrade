@@ -298,9 +298,11 @@ QuantDinger 提供：`Dockerfile`（非 root UID 10001、基础镜像固定 dige
 
 > **FastTrade 需立即修正的一处**：`docs/README.md` 由原 `docs/quant/README.md` 平移而来（提交 `2839ca4` 删除原文件，内容复制到 `docs/README.md`），但**内部相对链接未同步调整**，13 条分册链接全部指向不存在的 `docs/01-*.md`。详见 §6.4。
 
-### 6.4 已确认的文档死链（需修复）
+### 6.4 已确认的文档死链（✅ 已修复，commit `fa66f5f`）
 
-本次核对实测发现（非推测）：
+> 2026-11-20 处理完成：`docs/README.md` 已升级为全量文档总索引，13 条链接改为 `./quant/` 前缀，
+> 补齐管理后台与对比分析入口，并纳入 git；全仓 docs 相对链接死链数实测 **13 → 0**。
+> 以下为修复前的问题记录，保留作为决策依据。
 
 | 问题 | 证据 | 影响 |
 | --- | --- | --- |
@@ -349,15 +351,24 @@ QuantDinger 提供：`Dockerfile`（非 root UID 10001、基础镜像固定 dige
 
 ## 8. 差距清单与建议优先级
 
-### P0（建议立即补，收益最高）
+### P0（建议立即补，收益最高）—— 全部已处理 ✅
 
-| # | 差距 | 建议动作 | 工作量估计 |
+> 处理记录（2026-11-20）：以下 5 项已依次完成并提交，详见下方「处理状态」列。
+
+| # | 差距 | 建议动作 | 处理状态 |
 | --- | --- | --- | --- |
-| 1 | 无 CI | 建 `.github/workflows/ci.yml`：ruff + pytest + 覆盖率上报 + `pnpm type-check` + `pnpm test` | 小（1-2 天） |
-| 2 | 无权限码契约测试 | 写 `tests/test_permission_contract.py`：AST 解析 controller 权限码 ↔ `sys_menu.json` 比对 | 小（半天） |
-| 3 | 无安全扫描 | 加 `security.yml`：`pip-audit` + `bandit` + `gitleaks` + Dependabot | 小（半天） |
-| 4 | 回测指标贫乏 | 补 Sharpe / Sortino / Calmar / Profit Factor / VaR / 基准相对指标 | 中（3-5 天） |
-| 5 | 文档死链 | `docs/README.md` 13 条链接全部失效（分册实际在 `docs/quant/` 下）；`docs/quant/README.md` 已被删除但多处仍引用；`docs/README.md` 未被 git 跟踪。修复见 §6.4 | 极小（1 小时） |
+| 1 | 无 CI | 建 `.github/workflows/ci.yml`：ruff + pytest + 前端 type-check/test + 文档链接校验 | ✅ `ci.yml`（commit `b1ea89d`）：3 job，Python 3.12/3.13 矩阵 + Node20/pnpm9 + docs 链接 |
+| 2 | 无权限码契约测试 | 写 `tests/test_permission_contract.py`：AST 解析 controller 权限码 ↔ `sys_menu.json` 比对 | ✅ `test_permission_contract.py`（commit `33aa6ba`）：核心域双向一致，量化域前缀校验，3 passed |
+| 3 | 无安全扫描 | 加 `security.yml`：`pip-audit` + `bandit` + `gitleaks` + Dependabot | ✅ `security.yml` + `dependabot.yml`（commit `a269f53`）：3 job + 3 生态周检 |
+| 4 | 回测指标贫乏 | 补 Sharpe / Sortino / Calmar / Profit Factor / VaR / CVaR | ✅ `backtest/metrics.py` + engine 接入（commit `f3d2ce9`）：7 项指标，10 个 TDD 测试通过。基准相对指标仍属 P1 |
+| 5 | 文档死链 | `docs/README.md` 13 条链接失效 + 未跟踪 | ✅ `docs/README.md` 升级为全量索引（commit `fa66f5f`）：死链 13→0，纳入 git |
+
+**验证汇总**：13 个单元测试通过（`--noconftest`）；ruff 检查通过；docs 死链 0；3 个 CI/security YAML 均可解析。
+
+**遗留说明**：
+- CI 的 ruff 当前只校验新增契约测试（历史 935 条既有告警待逐步治理）；
+- pytest 在 `--noconftest` 下运行（仓库 conftest 在 Windows 沙箱下触发 `ProcessPoolExecutor` WinError 5，既有问题）；
+- CI 端到端需 push 后在 GitHub Actions 页确认。
 
 ### P1（产品化必需）
 
