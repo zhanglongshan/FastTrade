@@ -627,6 +627,7 @@ class AccountLedger:  # 账户账本：现金/持仓/成本/盈亏 | Account led
         *,  # 强制关键字参数 | Force keyword-only params
         low: float | None = None,  # 本根最低价（回测用）| Bar low (backtest)
         high: float | None = None,  # 本根最高价（回测用）| Bar high (backtest)
+        update_equity_peak: bool = True,  # 是否更新净值峰值 | Whether to lift the equity peak
     ) -> None:  # 无返回值 | No return value
         """用最新行情更新移动止损极值与净值峰值 | Update trailing extremes and the equity peak with the latest price.
 
@@ -640,6 +641,12 @@ class AccountLedger:  # 账户账本：现金/持仓/成本/盈亏 | Account led
             price (float): 最新价或收盘价 | Latest or close price.
             low (float | None): 本根最低价，None 时用 price | Bar low, price when None.
             high (float | None): 本根最高价，None 时用 price | Bar high, price when None.
+            update_equity_peak (bool): 是否抬升 ``peak_equity``。盘中风控心跳应按信号周期口径
+                更新（传 False），否则 1 分钟粒度会捕捉到大周期内的瞬时高点，回撤熔断比回测
+                更容易触发。
+                | Whether to lift ``peak_equity``. Intra-bar heartbeats pass False so the peak
+                follows the signal period; otherwise the one-minute granularity catches intra-bar
+                highs and trips the drawdown breaker more readily than the backtest does.
         """
         if price <= 0:  # 价格无效时不做任何更新 | Do nothing on invalid prices
             return  # 直接返回 | Return early
@@ -649,7 +656,8 @@ class AccountLedger:  # 账户账本：现金/持仓/成本/盈亏 | Account led
             self.long_peak = max(self.long_peak, high_px) if self.long_peak > 0 else high_px  # 扩展多头峰值 | Extend the long peak
         if self.short_qty > 0:  # 持有空头时维护最低价 | Track the trough while short
             self.short_trough = min(self.short_trough, low_px) if self.short_trough > 0 else low_px  # 扩展空头低点 | Extend the short trough
-        self.peak_equity = max(self.peak_equity, self.equity_at(price))  # 更新净值峰值 | Update the equity peak
+        if update_equity_peak:  # 净值峰值按信号周期口径更新 | The equity peak follows the signal period
+            self.peak_equity = max(self.peak_equity, self.equity_at(price))  # 更新净值峰值 | Update the equity peak
 
     def risk_orders(  # 生成风控强制平仓订单 | Produce forced-exit orders from risk rules
         self,
