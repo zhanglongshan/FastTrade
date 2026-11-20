@@ -225,6 +225,7 @@ async def run_tick(  # 执行一次策略 tick  | Execute one strategy tick
     risk_only: bool = False,  # 只跑风控、不跑策略（盘中 1 分钟风控检查）| Run risk only, no strategy (intra-bar 1m risk check)
     fill_basis_hint: str = "",  # 行情流给出的成交价口径（next_open/mid_fallback）| Basis reported by the stream
     spread_ratio: float = 0.0,  # 半价差比例；mid_fallback 时买加卖减以吃掉点差 | Half-spread applied to mid-based fills
+    min_notional: float = 0.0,  # 交易所最小名义额（计价币），0 表示不约束 | Venue minimum notional, 0 disables
 ) -> TickResult:  # 返回本次 tick 的结果 | Return this tick's result
     """执行一次策略 tick | Execute one strategy tick.
 
@@ -256,6 +257,12 @@ async def run_tick(  # 执行一次策略 tick  | Execute one strategy tick
       把"中间价不等于可成交价"这层成本补回来。
       | Half-spread, applied only to mid-based fills: added for buys, subtracted for sells, so a
       mid price is not mistaken for a tradeable one.
+    - min_notional (float): 交易所最小名义额（计价币）。>0 时低于该值的**开仓**订单被取消并
+      记入 ``unfilled[reason=min_notional]``，与回测的 ``api.min_notional`` 同口径；平仓单不
+      校验，避免小仓位被规则卡住永远平不掉。
+      | Venue minimum notional. Above zero, **entry** orders below it are cancelled and reported as
+      ``min_notional``, matching the backtest's ``api.min_notional``; exits are exempt so a small
+      position can always be closed.
 
     返回 | Returns:
     - TickResult: 本次 tick 价格、净值、持仓、成交与日志 | Price, equity, positions, fills and logs.
@@ -315,9 +322,14 @@ async def run_tick(  # 执行一次策略 tick  | Execute one strategy tick
     #    the full bar range and does trigger). The cost is up to one bar of detection lag,
     #    but breaches are never skipped.
     risk_bar = signal_window[-1]  # 最近一根已收盘 K 线（区间完整）| The latest closed bar with a complete range
-    ledger.mark(risk_bar.close, low=risk_bar.low, high=risk_bar.high)  # 更新风控状态 | Update risk state
+    ledger.mark(risk_bar.close, low=risk_bar.low, high=risk_bar.high, update_equity_peak=not risk_only)  # 更新风控状态（心跳不抬净值峰值）| Update risk state; heartbeats leave the equity peak alone
     fills: list[Fill] = []  # 初始化成交记录列表 | Init fill record list
     unfilled: list[dict[str, Any]] = []  # 深度不足未成交明细 | Unfilled-by-depth details
+    # 本次风控新产生的补单先放本地：同一份静态盘口已经用于止损主单，若立刻再登记到全局队列，
+    # 本次 tick 的补成交会把"同一档流动性"重复用一次，凭空虚增成交量。
+    # Risk remainders stay local for now: the same static book snapshot already capped the main stop,
+    # so registering them globally would let this tick's retry reuse that one liquidity level twice.
+    risk_carries: list[OrderRequest] = []  # 本次风控待下次 tick 补平的剩余量 | Exit remainders awaiting the next tick
     # 止损按"发现破位时的市价"成交：模拟盘/实盘只能在收盘后发市价单，真实成交价就是当前价。
     # 若仍按 min(开盘价, 止损价) 记账，价格回升时账本会长期低于交易所余额，只能靠对账抹平。
     # Stops fill at the market price seen on detection: paper/live can only send a market order after
@@ -325,9 +337,41 @@ async def run_tick(  # 执行一次策略 tick  | Execute one strategy tick
     # force reconciliation to paper over the gap.
     for risk_order, risk_price in ledger.risk_orders(price, low=risk_bar.low, high=risk_bar.high, stop_fill_at_market=True):  # 遍历强平订单 | Iterate forced exits
         try:  # 单笔风控失败不应中断整个 tick | One failed risk exit must not abort the tick
-            risk_fill = await executor.execute(risk_order, risk_price, depth)  # 立即撮合强平单（带深度约束）| Fill the forced exit immediately with depth
+            # 风控单必须与策略单共用同一套成交价口径：中间价兜底时买入抬到卖一、卖出压到买一。
+            # 否则止损会被记成"按中间价卖出"，账本系统性偏乐观，且与同一 tick 的普通订单互相矛盾。
+            # Forced exits share the strategy orders' pricing rules: on a mid-based basis buys lift the
+            # ask and sells hit the bid. Otherwise stops book at the mid, the ledger drifts optimistic
+            # and two orders in the same tick follow contradictory conventions.
+            risk_buys = risk_order.side in {"buy", "buycover"}  # 风控单是否为买入方向 | Whether the exit buys
+            risk_fill_price = risk_price  # 默认按基准价成交 | Default to the resolved price
+            if fill_basis == "mid_fallback" and spread_ratio > 0:  # 仅中间价口径补点差 | Only mid-based fills pay the spread
+                risk_fill_price = risk_price * (1 + spread_ratio) if risk_buys else risk_price * (1 - spread_ratio)  # 买加卖减 | Add for buys, subtract for sells
+            # 止损单同样受盘口深度约束，会被截断；剩余仓位若静默留在账上就是"止损没止住"，
+            # 必须写进 unfilled 让页面可见，模拟盘还要留到下一 tick 继续平。
+            # A stop is depth-capped too. Leaving the unfilled remainder silently open means the stop
+            # did not actually stop anything, so it is reported and paper mode retries it next tick.
+            risk_short = 0.0  # 深度不足导致的未平数量 | Quantity left unfilled by book depth
+            if depth is not None and float(risk_order.qty) > 0:  # 有盘口才可能被裁剪 | Only depth-capped when a book exists
+                risk_available = float(depth[1] if risk_buys else depth[0])  # 买吃卖一、卖吃买一 | Buys hit the ask, sells the bid
+                risk_short = max(0.0, float(risk_order.qty) - max(0.0, risk_available))  # 超出流动性的部分 | Excess over available liquidity
+            risk_fill = await executor.execute(risk_order, risk_fill_price, depth)  # 立即撮合强平单（带深度约束）| Fill the forced exit immediately with depth
             if risk_fill is not None:  # 成交则记录 | Record on success
                 fills.append(risk_fill)  # 追加成交记录 | Append the fill
+            if risk_short > 1e-12:  # 只平掉一部分时必须留痕 | A partial exit must always be visible
+                unfilled.append({"side": risk_order.side, "qty": round(risk_short, 8), "reason": "stop_loss"})  # 记录未平数量 | Record the unfilled exit
+                logger.warning(f"止损单被盘口深度截断：{risk_order.side} 剩余 {risk_short:.8g} 未平，请关注风险敞口")
+                if mode_value == RunMode.PAPER.value:  # 模拟盘留到下一 tick 继续平 | Paper retries on the next tick
+                    risk_carries.append(  # 暂存，等本 tick 结束后再入队 | Stash it until this tick finishes
+                        OrderRequest(  # 以差额数量构造剩余止损单 | Build the remainder exit
+                            side=risk_order.side,  # 方向 | Side
+                            qty=risk_short,  # 差额数量 | Shortfall quantity
+                            signal_price=risk_order.signal_price,  # 信号价 | Signal price
+                            reason=risk_order.reason,  # 原因（stop_loss）| Reason (stop_loss)
+                            symbol=risk_order.symbol,  # 交易对 | Symbol
+                            client_order_id="",  # 补单不沿用幂等号 | No reused id for retries
+                            qty_ratio=0.0,  # 固定数量补单 | Fixed quantity, no re-sizing
+                        )
+                    )  # 暂存结束 | End of stashing
         except CustomException as exc:  # 捕获业务异常并记录 | Catch business errors and log
             logger.warning(f"风控平仓失败({risk_order.side})：{exc}")  # 记录风控失败 | Log the risk-exit failure
         except Exception as exc:  # noqa: BLE001 - 风控异常不应阻塞策略 | Risk errors must not block the strategy
@@ -336,6 +380,8 @@ async def run_tick(  # 执行一次策略 tick  | Execute one strategy tick
     # 3.5) 盘中风控检查：只跑风控、不跑策略，直接返回
     # 3.5) Intra-bar risk check: risk only, no strategy, return immediately.
     if risk_only:  # 调度器在 1 分钟收盘时调用 | Called by the scheduler on every 1m close
+        for pending_carry in risk_carries:  # 心跳只登记剩余量，不开新仓 | Heartbeats only queue remainders, never open positions
+            ledger.add_remainder(pending_carry)  # 交回队列，下次完整 tick 继续平 | Hand back for the next full tick
         return TickResult(  # 构造风控结果 | Build the risk-only result
             mode=mode_value,  # 运行模式 | Run mode
             symbol=symbol,  # 原始交易对 | Original symbol
@@ -348,6 +394,7 @@ async def run_tick(  # 执行一次策略 tick  | Execute one strategy tick
             fills=[fill.__dict__ for fill in fills],  # 仅可能包含风控成交 | Only risk fills are possible
             logs=[f"[{risk_bar.date}] 盘中风控检查（1m）：{'触发平仓' if fills else '无触发'}"],  # 记录检查结果 | Record the check outcome
             rejected=[],  # 风控路径不产生被拒订单 | No rejections on this path
+            unfilled=unfilled,  # 心跳触发的止损若被深度截断也要可见 | Truncated heartbeat stops stay visible
             tick_time=now_iso,  # tick 时间 | Tick time
             signal_bar=risk_bar.date,  # 风控所用 K 线 | Bar used by the risk check
             fill_basis="risk_only",  # 口径标记 | Basis label
@@ -364,11 +411,17 @@ async def run_tick(  # 执行一次策略 tick  | Execute one strategy tick
                 carry_fill = await executor.execute(carry, price, depth)  # 按本次价格重试 | Retry at this tick's price
             except Exception as exc:  # noqa: BLE001 - 补成交异常只记录 | Log retry errors only
                 logger.warning(f"补成交失败({carry.side})：{type(exc).__name__}: {exc}")  # 记录补成交异常 | Log the retry error
+                ledger.add_remainder(carry)  # 异常时保留，不能把剩余量丢掉 | Keep it: an exception must not drop the remainder
                 continue  # 跳过该笔 | Skip this one
             if carry_fill is not None:  # 成交则记入本 tick | Book it when filled
                 fills.append(carry_fill)  # 追加成交 | Append the fill
+                carry_short = float(carry.qty) - float(carry_fill.qty)  # 仍被深度截断的部分 | What depth still truncated
+                if carry_short > 1e-12:  # 部分成交时保留剩余 | Keep the rest on partial fills
+                    ledger.add_remainder(_replace_qty(carry, carry_short))  # 重新入队，下个 tick 再来 | Requeue for the next tick
             else:  # 仍然无法成交：放弃，避免无限重试 | Still unfillable: drop it instead of retrying forever
                 unfilled.append({"side": carry.side, "qty": round(float(carry.qty), 8), "reason": "depth_retry_failed"})  # 记录放弃原因 | Record why it was dropped
+    for pending_carry in risk_carries:  # 本次风控的剩余量在补成交之后再入队 | Queue this tick's exit remainders after the retry
+        ledger.add_remainder(pending_carry)  # 下一个 tick 继续平 | Continue exiting next tick
 
     # 4) 构造统一策略接口（绑定"已收盘"窗口与当前成交价）
     # 4) Build the unified strategy API bound to the closed window and the fill price.
@@ -457,6 +510,15 @@ async def run_tick(  # 执行一次策略 tick  | Execute one strategy tick
                     ledger.slippage,  # 滑点比例 | Slippage ratio
                 )  # 数量换算结束 | End of sizing
             sized = _replace_qty(order, fill_qty)  # 用成交价口径数量构造订单 | Build the order at the fill quantity
+            # 交易所最小名义额：低于下限的订单在实盘会被直接拒绝，模拟盘若不校验就会成交
+            # "实盘永远做不到"的碎单，让两种模式的结果失去可比性。平仓单豁免，否则小仓位平不掉。
+            # Venue minimum notional: the venue rejects such orders outright, so paper mode must too,
+            # otherwise it fills dust the live account never could. Exits are exempt so a small
+            # position can still be closed.
+            if min_notional > 0 and order.side in {"buy", "sellshort"} and fill_qty > 0 and fill_qty * order_price < min_notional:  # 仅校验开仓单 | Only entries are gated
+                unfilled.append({"side": order.side, "qty": round(fill_qty, 8), "reason": "min_notional"})  # 记录未成交原因 | Record the rejection reason
+                api.log(f"订单名义额 {fill_qty * order_price:.8g} 低于交易所最小额 {min_notional}，已取消：{order.side}")  # 写入策略日志 | Log the cancellation
+                continue  # 跳过该单 | Skip this order
             # 深度差额先算出来：执行器会把这部分裁掉且不回报，只有在这里记录才能看见"少成交了多少"
             # Compute the depth shortfall first: the executor silently truncates it, so this is the only
             # place where "how much did not fill" can be observed.
