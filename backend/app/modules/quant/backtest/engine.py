@@ -9,7 +9,7 @@ does not require pandas, and strategies can directly call api.buy()/sell() etc.
 
 import csv  # 导入 CSV 读写模块，用于解析 OHLCV 数据文件 | Import CSV module for parsing OHLCV data files
 from dataclasses import asdict  # 导入 dataclass 转字典工具，用于序列化成交记录 | Import helper to convert dataclasses to dicts
-from datetime import datetime  # 导入 datetime，用于解析 K 线时间与计算年化 | Import datetime for parsing candle time and annualization
+from datetime import UTC, datetime  # 导入 datetime 与 UTC，用于解析 K 线时间、年化与未来数据判定 | Import datetime and UTC for bar times, annualization and future checks
 from pathlib import Path  # 导入 Path，用于文件路径操作 | Import Path for file path operations
 from typing import Any  # 导入 Any，用于结果字典的宽松类型标注 | Import Any for loose typing of the result dict
 
@@ -156,6 +156,7 @@ def run_backtest(
     leverage: float = 1.0,  # 杠杆倍数，1 表示现货全额，>1 表示合约保证金交易 | Leverage; 1 is spot, >1 is margin
     min_notional: float = 0.0,  # 交易所最小名义金额，0 表示不约束 | Exchange minimum notional, 0 disables the check
     final_fill_basis: str = "close",  # 末根未成交订单处理：close-按收盘撮合，skip-直接放弃 | Final-bar handling: close or skip
+    now: datetime | None = None,  # 收盘判定的参考时刻；None 取当前 UTC，测试可注入固定值 | Reference instant for closure checks; injectable for deterministic tests
 ) -> dict[str, Any]:
     """执行回测并返回结果摘要 | Run a backtest and return a result summary.
 
@@ -181,6 +182,9 @@ def run_backtest(
             的语义一致 | Signals on the last bar have no next open. ``close`` fills at that bar's
             close (legacy, keeps historical results comparable); ``skip`` drops them, matching live
             semantics where a fill always needs the following bar.
+        now (datetime | None): 收盘判定的参考时刻，默认当前 UTC。只影响"末尾未收盘/未来数据"
+            守卫，不改变撮合口径；测试注入固定值可消除时钟依赖。
+            | Reference instant for the closure guard only; it does not affect fill conventions.
 
     返回 | Returns:
         dict[str, Any]: 收益、回撤、成交明细与净值曲线 | Returns, drawdown, trade details and equity curve.
@@ -195,15 +199,31 @@ def run_backtest(
     # signalling and filling on a price that has not finished forming — textbook look-ahead. Data
     # files are usually downloaded "up to now", so the last bar often is exactly that forming bar.
     dropped_unclosed = 0  # 被丢弃的未收盘根数 | Number of dropped unclosed bars
-    # 只检查最后一根：只有它能是"正在形成"的。若整份数据都晚于当前时钟（时区/伪造数据），
-    # 逐根丢弃会把数据集清空，因此这里只丢一根，并且时间无法解析时不做任何丢弃。
-    # Only the last bar can be forming. If the whole file looks "future-dated" (timezone issues or
-    # synthetic data), dropping repeatedly would empty the dataset, so exactly one bar is dropped and
-    # nothing happens when the timestamp cannot be parsed.
-    if len(candles) > 2 and parse_bar_time(str(candles[-1].date)) is not None:  # 时间可解析才判断 | Only judge parseable timestamps
-        if not bar_is_closed(str(candles[-1].date), interval):  # 末根未收盘 | The last bar is still forming
-            candles = candles[:-1]  # 丢弃末根 | Drop it
-            dropped_unclosed = 1  # 计数 | Count it
+    now_utc = now or datetime.now(UTC)  # 统一参考时刻，避免逐根比较时时钟漂移 | One reference instant for all checks
+    # 晚于当前时钟的 K 线不是"未收盘"，而是时区错乱或伪造数据：当成已收盘使用就是未来函数，
+    # 而逐根丢弃又会把整份数据集清空（用户只会看到"数据不足"），所以这里显式报错。
+    # Bars dated in the future are not "still forming" but broken timezones or fabricated data.
+    # Using them as closed creates look-ahead; dropping them row by row empties the dataset and
+    # only surfaces as "not enough data", so this raises an explicit, actionable error instead.
+    future_bars = sum(  # 统计未来时间的 K 线数量 | Count future-dated bars
+        1
+        for candle in candles
+        if (parsed_time := parse_bar_time(str(candle.date))) is not None and parsed_time > now_utc  # 仅统计可解析且晚于当前时刻的根 | Only parseable bars after now
+    )
+    if future_bars:  # 存在未来数据直接拒绝回测 | Refuse to backtest on future data
+        raise CustomException(msg=f"数据包含 {future_bars} 根晚于当前时间的 K 线，请检查时区或数据源")  # 抛出可读错误 | Raise an actionable error
+    # 连续丢弃尾部所有未收盘根：数据截断在多根未收盘处时（例如分钟线停在盘中），
+    # 只丢一根仍会把剩下的形成中 K 线当已收盘，产生未来函数。
+    # Drop every trailing unclosed bar: when the data stops mid-bar (intraday minute files),
+    # dropping only one still leaves forming bars treated as closed, i.e. look-ahead.
+    while len(candles) > 2:  # 保留至少两根，避免把数据集清空 | Keep at least two bars
+        last_text = str(candles[-1].date)  # 末根时间文本 | Timestamp of the last bar
+        if parse_bar_time(last_text) is None:  # 时间无法解析时不做任何丢弃 | Leave unparseable timestamps alone
+            break  # 停止丢弃 | Stop dropping
+        if bar_is_closed(last_text, interval, now=now_utc):  # 末根已收盘即正常结束 | Stop at the first closed bar
+            break  # 停止丢弃 | Stop dropping
+        candles = candles[:-1]  # 丢弃末根 | Drop it
+        dropped_unclosed += 1  # 计数 | Count it
     if dropped_unclosed:  # 有丢弃时记录，便于用户核对数据 | Log so users can verify their data
         logger.warning(f"回测数据末 {dropped_unclosed} 根 K 线尚未收盘，已丢弃以避免未来函数")  # 记录告警 | Log a warning
     if len(candles) < 2:  # 丢弃后不足两根 | Not enough bars after dropping
