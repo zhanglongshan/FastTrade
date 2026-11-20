@@ -19,6 +19,7 @@ from app.core.logger import logger  # 导入日志对象，用于模式冲突告
 from ..execution.risk import RiskSettings  # 导入风控配置（与实盘共享）| Import risk settings shared with live mode
 from ..strategy.api import Candle, Strategy, TradeAPI  # 导入 K 线、策略基类与交易 API（回测撮合核心）| Import Candle, Strategy base and TradeAPI (matching core)
 from ..strategy.trading_base import bar_is_closed, parse_bar_time  # 导入收盘判定与时间解析 | Import the bar-closure check and timestamp parser
+from .metrics import calculate_enhanced_metrics  # 导入增强型风险收益指标（Sharpe/Sortino 等）| Import enhanced performance metrics
 
 CSV_COLUMNS = ["date", "open", "high", "low", "close", "volume"]  # CSV 必需的六列：时间/开/高/低/收/量 | Required CSV columns: date/open/high/low/close/volume
 
@@ -337,6 +338,14 @@ def run_backtest(
     days = max(1, (last_date - first_date).days)  # 回测天数，至少 1 天避免除零 | Backtest duration in days, at least 1 to avoid division by zero
     annualized_return = (final_equity / initial_cash) ** (365 / days) - 1 if final_equity > 0 else -1.0  # 年化收益（复利）；权益为负按 -100% 处理 | Annualized (compounded) return; -100% if equity is non-positive
 
+    max_drawdown = _max_drawdown(api.equity_curve)  # 最大回撤（增强指标 Calmar 也会复用）| Max drawdown (also reused by Calmar)
+    enhanced = calculate_enhanced_metrics(  # 计算增强型风险收益指标 | Compute enhanced performance metrics
+        api.equity_curve,  # 净值曲线 | Equity curve
+        [asdict(trade) for trade in api.trades],  # 成交明细（含 pnl） | Trade details with pnl
+        interval=interval,  # K 线周期用于年化换算 | Candle interval for annualization
+        max_drawdown=max_drawdown,  # 复用已算出的最大回撤 | Reuse the computed max drawdown
+    )  # 增强指标计算结束 | End of enhanced metrics
+
     return {  # 组装回测结果字典 | Assemble the backtest result dictionary
         "strategy": strategy_cls.__name__,  # 策略类名 | Strategy class name
         "symbol": symbol,  # 交易对 | Trading pair
@@ -345,7 +354,8 @@ def run_backtest(
         "final_equity": round(final_equity, 6),  # 最终权益 | Final equity
         "total_return": round(total_return, 6),  # 总收益率 | Total return
         "annualized_return": round(annualized_return, 6),  # 年化收益率 | Annualized return
-        "max_drawdown": round(_max_drawdown(api.equity_curve), 6),  # 最大回撤 | Maximum drawdown
+        "max_drawdown": round(max_drawdown, 6),  # 最大回撤 | Maximum drawdown
+        **enhanced,  # 增强指标：sharpe/sortino/calmar_ratio/profit_factor/var_95/cvar_95/expectancy | Enhanced metrics
         "trade_count": len(api.trades),  # 成交总笔数 | Total number of trades
         "closed_trade_count": len(closed_trades),  # 已平仓笔数 | Number of closed trades
         "win_rate": round(len(win_trades) / len(closed_trades), 6) if closed_trades else 0.0,  # 胜率；无平仓单时为 0 | Win rate; 0 when no closed trades
