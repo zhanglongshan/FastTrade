@@ -34,6 +34,7 @@ import contextlib  # 导入上下文工具（忽略退订异常）| Import conte
 import math  # 导入数学库（对齐 bar 边界）| Import math for bar-boundary alignment
 import time  # 导入时间库（取当前时间戳）| Import time for the current timestamp
 from datetime import UTC, datetime  # 从 datetime 导入 UTC 与 datetime | Import UTC and datetime for timestamp handling
+from typing import Any  # 导入 Any 用于测试替身等弱类型入参 | Import Any for loosely typed inputs such as test doubles
 
 from sqlalchemy import select  # 从 sqlalchemy 导入 select | Import select to build ORM query statements
 from sqlalchemy.ext.asyncio import AsyncSession  # 从 sqlalchemy.ext.asyncio 导入 AsyncSession | Import AsyncSession as the async DB session type
@@ -53,6 +54,7 @@ from app.utils.import_util import ImportUtil  # 导入模块发现工具 | Impor
 ImportUtil.find_models(MappedBase)  # 触发所有 ORM 模型注册 | Trigger registration of all ORM models
 
 from ..execution.base import AccountLedger, RunMode  # 导入账本、订单请求与运行模式 | Import ledger, order request and run mode enums
+from ..execution.exchange import symbol_rules  # 导入交易对规则查询（最小名义额）| Import the venue-rules lookup
 from ..execution.risk import RiskSettings  # 导入风控配置（从策略类读取）| Import risk settings read from the strategy class
 from ..execution.runner import LiveExecutor, PaperExecutor, TickResult, run_tick  # 导入执行器与 tick 驱动 | Import executors and the tick driver
 from ..execution.stream import market_stream  # 导入行情推送单例（替代轮询）| Import the market-stream singleton that replaces polling
@@ -90,10 +92,12 @@ _TICK_LOCKS: dict[int, asyncio.Lock] = {}  # 实例 ID -> 互斥锁 | Instance i
 
 # 风控心跳的独立占位：不能复用 last_tick_time，否则 1 分钟心跳会把信号周期的占位一直刷新，
 # 要么自身被"半根大周期"窗口全部挡掉，要么把真正的信号 tick 判成"本根已处理"而跳过。
+# 占位落在数据库列 last_risk_time（而非进程内字典），多副本才能共享同一次心跳，
+# 避免每个副本各自判一次止损、重复发出平仓单。
 # A dedicated claim for risk heartbeats: reusing last_tick_time lets the 1m heartbeat keep resetting
 # the signal-period claim, so either the heartbeat itself is throttled away or the real signal tick
-# is mistaken for "already processed" and skipped.
-_RISK_TICK_AT: dict[int, float] = {}  # 实例 ID -> 上次风控心跳的单调时钟秒 | Instance id -> last risk heartbeat (monotonic)
+# is mistaken for "already processed" and skipped. The claim lives in the last_risk_time column
+# (not a process-local dict) so replicas share one heartbeat and never duplicate a stop exit.
 _RISK_TICK_WINDOW = 30.0  # 风控心跳最小间隔（秒）| Minimum seconds between risk heartbeats
 _SPOT_SHORT_WARNED: set[int] = set()  # 已告警"实盘现货禁空"的实例 ID | Instances already warned about spot shorting
 
@@ -139,6 +143,33 @@ def _interval_seconds(interval: str) -> int:  # 周期 → tick 间隔（秒）|
     """
     base = int(settings.QUANT_TICK_INTERVAL or 60)  # 基础间隔：配置值或默认 60 秒 | Base interval: configured value or default 60s
     return max(base, _INTERVAL_SECONDS.get(interval, base))  # 返回基础间隔与映射值的较大者 | Return the larger of base and mapped value
+
+
+def _touch_tick_time(obj: Any, *, risk_only: bool) -> None:  # 更新占位时间（心跳除外）| Update the claim clock except for heartbeats
+    """刷新实例的 ``last_tick_time``，风控心跳不写 | Refresh ``last_tick_time`` except for risk heartbeats.
+
+    目的 | Purpose:
+        ``_claim_tick(touch=False)`` 只保证"抢占阶段"不写占位；若持久化阶段仍无条件写
+        ``last_tick_time``，1m 心跳每分钟刷新一次，1h/4h 实例的半根窗（30/120 分钟）
+        永远认为"刚跑过"，信号 tick 会被 100% 吞掉，策略彻底停摆。
+        把写入收敛到本函数，心跳与信号 tick 才真正共用同一套语义。
+        ``_claim_tick(touch=False)`` only keeps the *claim* step from writing the column. If the
+        persistence step still writes ``last_tick_time`` unconditionally, the per-minute heartbeat
+        refreshes it constantly and the half-bar window of a 1h/4h instance (30/120 minutes) always
+        looks "just ran" — every signal tick is swallowed and the strategy stops entirely.
+        Funnelling the write through this function gives heartbeats and signal ticks one semantic.
+
+    参数 | Parameters:
+        obj: 实例行（或测试替身），需有 ``last_tick_time`` 属性 | The instance row (or a stub) exposing ``last_tick_time``.
+        risk_only (bool): 本次是否为盘中风控心跳 | Whether this run is an intra-bar heartbeat.
+
+    返回 | Returns:
+        None: 原地修改对象 | Mutates the object in place.
+    """
+    if risk_only:  # 心跳只更新 last_result.tick_time，不动占位列 | Heartbeats only refresh last_result.tick_time
+        return None  # 直接返回 | Return immediately
+    obj.last_tick_time = _naive_utc()  # 信号 tick 刷新占位 | Signal ticks refresh the claim
+    return None  # 显式无返回值 | Explicit no return
 
 
 async def _claim_tick(  # 抢占本根 K 线的执行权 | Claim the right to run this bar
@@ -207,12 +238,15 @@ async def _claim_tick(  # 抢占本根 K 线的执行权 | Claim the right to ru
         await db.commit()  # 提交以释放行锁 | Commit to release the lock
         return obj, True  # 直接放行 | Run immediately
     if not touch:  # 风控心跳：只做短窗节流，绝不写 last_tick_time | Risk heartbeat: short throttle only, never touch last_tick_time
-        last_risk = _RISK_TICK_AT.get(strategy_id, 0.0)  # 上次风控心跳（单调时钟）| Last risk heartbeat (monotonic)
-        if last_risk and time.monotonic() - last_risk < _RISK_TICK_WINDOW:  # 距上次心跳过近 | Too close to the previous heartbeat
+        # 心跳时间必须落库：进程内字典在多副本之间互不可见，各副本会各自判一次止损并重复平仓。
+        # The heartbeat must persist: a process-local dict is invisible to other replicas, so each
+        # replica would evaluate the same stop and send a duplicate exit.
+        last_risk = obj.last_risk_time  # 上次心跳（数据库列，跨副本共享）| Last heartbeat from the shared DB column
+        if last_risk is not None and (now - last_risk).total_seconds() < _RISK_TICK_WINDOW:  # 距上次心跳过近 | Too close to the previous heartbeat
             await db.commit()  # 提交（释放行锁）| Commit to release the lock
             return obj, False  # 本轮跳过 | Skip this round
-        _RISK_TICK_AT[strategy_id] = time.monotonic()  # 记录本次心跳时刻 | Record this heartbeat
-        await db.commit()  # 提交并释放锁（不修改实例行）| Commit and release without modifying the row
+        obj.last_risk_time = now  # 写入心跳时间，其他副本可见 | Persist so other replicas see it
+        await db.commit()  # 提交并释放锁（只改心跳列）| Commit and release, touching only the heartbeat column
         return obj, True  # 允许本次风控检查 | Allow this risk check
     if last is not None and (now - last).total_seconds() < window:  # 另一个实例已经跑过本根 | Another instance already ran this bar
         await db.commit()  # 提交（释放行锁）| Commit to release the lock
@@ -718,6 +752,15 @@ async def _run_strategy_tick_impl(
         if summary.get("changed"):  # 有变化时记录，便于审计 | Log when something changed
             logger.info(f"实盘对账修正({obj.symbol})：{summary}")  # 记录修正明细 | Log the adjustments
     allow_short = bool(obj.allow_short) if obj.mode == RunMode.PAPER.value else bool(obj.allow_short and obj.dry_run)  # 计算是否允许做空：实盘仅 dry_run 时允许 | Decide if shorting is allowed
+    # 交易对规则（最小名义额等）来自币安 exchangeInfo，带进程缓存与 TTL：命中时是纯内存读，
+    # 不会阻塞事件循环；查询失败退化为"无约束"，不因规则接口抖动而中断交易。
+    # 盘中风控心跳只平仓，而平仓豁免最小名义额，所以心跳不查询规则，避免首次心跳被网络拖慢。
+    # Venue rules (min notional and friends) come from Binance exchangeInfo behind a process cache:
+    # a hit is a pure memory read, so the event loop never blocks, and a failed lookup degrades to
+    # "unconstrained" instead of stopping trading over a flaky rules endpoint. Intra-bar heartbeats
+    # only exit positions and exits are exempt from the floor, so they skip the lookup entirely.
+    venue_rules = await symbol_rules(obj.symbol) if not risk_only else {}  # 心跳不查规则 | Heartbeats skip the lookup
+    min_notional = float(venue_rules.get("min_notional") or 0.0)  # 最小名义额（计价币）| Minimum notional in the quote asset
     # 运行一次 tick；任何失败都落库以便页面排查，然后重新抛出
     # Run one tick; persist any failure for UI troubleshooting, then re-raise.
     try:
@@ -737,11 +780,12 @@ async def _run_strategy_tick_impl(
             risk_only=risk_only,  # 只跑风控（盘中 1m 检查）| Risk-only intra-bar check
             fill_basis_hint=fill_basis,  # 成交价口径（next_open/mid_fallback）| Fill-price basis
             spread_ratio=spread_ratio,  # 半价差（仅 mid_fallback 生效）| Half-spread for mid-based fills
+            min_notional=min_notional,  # 交易所最小名义额，模拟盘同口径校验 | Same venue floor for paper mode
         )
     except Exception as exc:  # noqa: BLE001 - 任何失败落库，供页面排查 | Persist any failure for UI troubleshooting
         obj.status = 2  # 标记异常状态 | Mark error status
         obj.last_error = str(exc)  # 记录错误文案 | Store error message
-        obj.last_tick_time = _naive_utc()  # 记录 tick 时间 | Record tick time
+        _touch_tick_time(obj, risk_only=risk_only)  # 心跳失败同样不写占位 | Failed heartbeats leave the claim alone too
         await db.commit()  # 提交错误信息 | Commit the error info
         raise  # 重新抛出异常交由调用方处理 | Re-raise for the caller
 
@@ -754,7 +798,7 @@ async def _run_strategy_tick_impl(
         payload["risk_bar"] = result.signal_bar  # 单独记录风控所用 bar | Record the risk bar separately
     obj.last_result = payload  # 写回最近一次 tick 结果 | Write back latest tick result
     obj.last_error = result.error  # 写回本次错误信息（可能为 None）| Write back latest error (may be None)
-    obj.last_tick_time = _naive_utc()  # 更新最近 tick 时间 | Update last tick time
+    _touch_tick_time(obj, risk_only=risk_only)  # 心跳不刷新占位，避免吞掉信号 tick | Heartbeats must not refresh the claim
     if obj.status == 2:  # 若之前处于异常状态 | If previously in error status
         obj.status = 1  # 异常后成功运行，自动恢复运行状态 | Recover running status after a successful tick
 
@@ -874,10 +918,10 @@ class RuntimeManager:
         from app.core.database import async_db_session  # 导入异步数据库会话上下文 | Import the async DB session context manager
 
         task = self._tasks.pop(strategy_id, None)  # 取出并移除任务 | Pop the task from the map
-        # 清理该实例的进程内占位：心跳时间戳与"已告警"标记都属于实例级状态，停止后应释放
-        # Drop the per-instance in-process state: heartbeat timestamps and the warned flag are
-        # instance-scoped and should not outlive a stopped instance.
-        _RISK_TICK_AT.pop(strategy_id, None)  # 清掉心跳占位 | Drop the heartbeat claim
+        # 清理该实例的进程内标记："已告警"标记属于实例级状态，停止后应释放。
+        # 心跳占位已落库（last_risk_time），停止时无需也不能在内存里清理。
+        # Drop the per-instance in-process flag; the heartbeat claim now lives in the database
+        # (last_risk_time), so there is nothing to clear in memory.
         _SPOT_SHORT_WARNED.discard(strategy_id)  # 清掉告警标记 | Drop the warned flag
         if task and not task.done():  # 任务存在且未完成时取消 | Cancel if the task exists and is unfinished
             task.cancel()  # 请求取消任务 | Request task cancellation
