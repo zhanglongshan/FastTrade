@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.12', '3.13']
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.13.8'
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # 仓库历史存在大量既有 ruff 告警，CI 只对新纳入的契约测试做强校验，
+      # 避免从第一天起就因历史债务全红；随治理推进逐步扩大范围。
+      - name: Ruff check (new contract test)
+        run: uv run ruff check tests/test_permission_contract.py
+
+      - name: Pytest
+        # --noconftest：仓库 conftest.py 在模块导入期即 create_app()，
+        # 会触发 ap_scheduler 的进程池初始化；此处的静态契约测试不依赖该 fixture。
+        run: uv run pytest -q --noconftest -p no:cacheprovider
+
+  frontend:
+    name: Frontend (Node 20, pnpm 9)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: front-web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.3
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm type-check
+
+      - name: Vitest
+        run: pnpm test
+
+  docs:
+    name: Docs links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify relative markdown links
+        run: |
+          python - <<'PY'
+          import pathlib, re, sys
+          root = pathlib.Path('docs')
+          bad = []
+          for f in root.rglob('*.md'):
+              text = f.read_text(encoding='utf-8')
+              for target in re.findall(r'\]\((\.[^)#\s]+)\)', text):
+                  resolved = (f.parent / target).resolve()
+                  if not resolved.exists():
+                      bad.append(f'{f}: {target}')
+          if bad:
+              print('Broken links:')
+              print('\n'.join(bad))
+              sys.exit(1)
+          print('All docs relative links valid.')
+          PY
