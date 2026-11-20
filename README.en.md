@@ -30,7 +30,7 @@ Market data  →  Strategy  →  Backtest  →  Paper trading  →  Live trading
 
 The core design is **write the strategy once**: the same code runs in backtest, paper and live modes, with only the executor swapped. All three markets share one strategy directory and one trading API; only data sources, tables and brokers differ. The admin console (users, roles, menus, logs, tasks, storage, etc.) is the platform foundation, not the focus of this project.
 
-> Full manual: [`docs/quant/README.md`](./docs/quant/README.md).
+> Full manual: [`docs/README.md`](./docs/README.md).
 
 ## 🎯 Quant capabilities
 
@@ -292,7 +292,7 @@ Integration tests that need real PostgreSQL / Redis are skipped by default; enab
 
 ## 📚 Documentation
 
-- Quant overview: [`docs/quant/README.md`](./docs/quant/README.md)
+- Quant overview: [`docs/README.md`](./docs/README.md)
 - [Data download and import](./docs/quant/01-数据下载与导入.md)
 - [Strategy development](./docs/quant/02-策略开发.md)
 - [Backtesting](./docs/quant/03-回测操作.md)
