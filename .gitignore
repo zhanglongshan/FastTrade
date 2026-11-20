@@ -4,8 +4,11 @@
 !.env.example
 !front-web/.env.development.example
 !front-web/.env.production.example
-backend/env/.env.dev
-backend/env/.env.prod
+# 量化环境配置目录：整目录内容忽略（含 .env.dev / .env.prod 真实密钥），只保留可提交的模板
+# 用 backend/env/* 而非 backend/env/，否则父目录被忽略后 ! 例外无法生效
+backend/env/*
+!backend/env/.env.example
+!backend/env/.env.quant.example
 
 # Python
 __pycache__/
