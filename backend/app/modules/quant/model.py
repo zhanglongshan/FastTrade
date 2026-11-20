@@ -105,7 +105,8 @@ class QuantLiveStrategyModel(ModelMixin, UserMixin):
     api_secret: Mapped[str | None] = mapped_column(Text, nullable=True, default=None, comment="币安 API Secret（Fernet 加密）")  # 加密存储的 API Secret | Encrypted API secret
     last_result: Mapped[dict | None] = mapped_column(JSONType, nullable=True, default=None, comment="最近一次 tick 结果 JSON")  # 最近一次 tick 结果 | Result of the latest tick
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True, default=None, comment="最近错误")  # 最近一次错误信息 | Latest error message
-    last_tick_time: Mapped[datetime | None] = mapped_column(nullable=True, comment="最近运行时间")  # 最近运行时间 | Last run timestamp
+    last_tick_time: Mapped[datetime | None] = mapped_column(nullable=True, comment="最近运行时间")  # 最近运行时间（信号周期 tick）| Last run timestamp (signal ticks)
+    last_risk_time: Mapped[datetime | None] = mapped_column(nullable=True, comment="最近风控心跳时间")  # 最近风控心跳，多副本共享节流 | Last risk heartbeat shared across replicas
     description: Mapped[str | None] = mapped_column(Text, nullable=True, default=None, comment="备注")  # 实例备注 | Instance description
 
 
