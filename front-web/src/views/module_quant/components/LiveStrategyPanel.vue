@@ -123,7 +123,8 @@
         </el-table-column>
         <el-table-column label="最近运行" width="160">
           <template #default="{ row }">
-            <div>{{ row.last_tick_time || '-' }}</div>
+            <!-- 优先展示最近一次 tick（含盘中风控心跳），last_tick_time 只记录信号周期 -->
+            <div>{{ row.last_result?.tick_time || row.last_tick_time || '-' }}</div>
             <div v-if="row.last_error" class="text-xs text-red-500" :title="row.last_error">异常</div>
           </template>
         </el-table-column>
