@@ -23,8 +23,10 @@ from datetime import UTC, datetime, timedelta  # 导入时间工具 | Import dat
 
 import pytest  # 导入测试框架 | Import pytest
 
+from app.core.exceptions import CustomException  # 导入业务异常（未来数据应报错）| Import the domain exception
 from app.modules.quant.backtest.engine import run_backtest  # 导入回测入口 | Import the backtest entry point
-from app.modules.quant.execution.base import AccountLedger  # 导入统一账本 | Import the shared ledger
+from app.modules.quant.execution.base import AccountLedger, OrderRequest  # 导入统一账本与订单 | Import the shared ledger and order
+from app.modules.quant.execution.risk import RiskSettings  # 导入风控配置 | Import risk settings
 from app.modules.quant.execution.runner import PaperExecutor, run_tick  # 导入运行时与模拟执行器 | Import runtime and paper executor
 from app.modules.quant.runtime import service as runtime_service  # 导入调度服务（_claim_tick）| Import the scheduler service
 from app.modules.quant.strategy.api import Candle, Strategy  # 导入 K 线与策略基类 | Import Candle and Strategy
@@ -181,22 +183,29 @@ class _FakeSession:  # 假数据库会话 | Fake DB session
 class _Row:  # 假的实例行 | Fake instance row
     """只带 _claim_tick 需要的字段 | Carries only the fields _claim_tick reads."""
 
-    def __init__(self, last_tick_time: datetime | None, *, interval: str = "1h") -> None:  # 初始化 | Initialize
+    def __init__(  # 初始化 | Initialize
+        self,  # 实例自身 | The instance
+        last_tick_time: datetime | None,  # 上次信号 tick | Last signal tick
+        *,  # 强制关键字参数 | Force keyword-only params
+        interval: str = "1h",  # 周期 | Interval
+        last_risk_time: datetime | None = None,  # 上次风控心跳（数据库列）| Last risk heartbeat (DB column)
+    ) -> None:  # 无返回值 | No return value
         """初始化行字段 | Initialize the row fields.
 
         参数 | Parameters:
             last_tick_time (datetime | None): 上次 tick 时间 | Last tick time.
             interval (str): 周期 | Interval.
+            last_risk_time (datetime | None): 上次风控心跳时间 | Last risk heartbeat time.
         """
         self.id = 1  # 主键 | Primary key
         self.last_tick_time = last_tick_time  # 上次 tick | Last tick time
+        self.last_risk_time = last_risk_time  # 上次心跳 | Last heartbeat
         self.is_deleted = False  # 未删除 | Not deleted
         self.interval = interval  # 周期 | Interval
 
 
 def test_risk_heartbeat_claim_does_not_block_signal_tick() -> None:  # 风控心跳不吞掉信号 tick | Heartbeats never swallow the signal tick
     """1m 风控心跳不写 last_tick_time，因此半根窗内仍能跑到信号 tick | Heartbeats leave the claim column alone."""
-    runtime_service._RISK_TICK_AT.clear()  # 清空心跳占位 | Clear heartbeat claims
     row = _Row(datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=45), interval="1h")  # 45 分钟前跑过信号 | Signal ran 45m ago
     before = row.last_tick_time  # 记录原值 | Remember the original
     session = _FakeSession(row)  # 假会话 | Fake session
@@ -323,3 +332,241 @@ def test_reverse_position_in_same_bar() -> None:  # 同根反手可行 | Reversa
     assert "first" in reasons  # 首笔建仓 | Initial entry
     assert "exit" in reasons  # 平仓成交 | Exit filled
     assert "reverse" in reasons  # 反手成交（旧门控会拒绝）| Re-entry filled (the old gate rejected it)
+
+
+class StopLoss5(Strategy):  # 只带 5% 固定止损、从不主动下单 | Carries a 5% stop and never orders
+    """用于验证风控平仓路径 | Drives the forced-exit path under test."""
+
+    name = "止损五"  # 策略名 | Strategy name
+    startup_candle_count = 0  # 无需预热 | No warmup
+    stoploss = 0.05  # 相对开仓价 -5% | Five percent below the entry price
+
+    def on_bar(self, api, candles, index):  # 逐根回调 | Per-bar callback
+        """不产生任何订单，只让风控接管 | Never orders, leaving exits to the risk layer."""
+        return None  # 显式无操作 | Explicit no-op
+
+
+def _long_ledger(qty: float = 10.0, price: float = 100.0) -> AccountLedger:  # 构造带多头持仓的账本 | Build a ledger holding a long
+    """以 5% 止损建仓 qty 个多头 | Open a long of qty with a 5% stop."""
+    ledger = AccountLedger(10000.0, fee_rate=0.0, slippage=0.0, risk=RiskSettings(stoploss=0.05))  # 关闭费用以便断言价格 | Zero fees so prices stay exact
+    ledger.execute(OrderRequest(side="buy", qty=qty, signal_price=price), price)  # 直接记账建仓 | Book the entry directly
+    return ledger  # 返回账本 | Return the ledger
+
+
+def test_risk_heartbeat_persist_does_not_reset_claim_clock() -> None:  # 心跳持久化不改占位时间 | Persisting a heartbeat must not move the claim clock
+    """风控心跳写库时也不能改写 last_tick_time，否则下一根信号 tick 会被半根窗吞掉 | A persisted heartbeat must not swallow the next signal tick.
+
+    背景：``_claim_tick(touch=False)`` 本身不写占位，但持久化阶段若仍无条件写
+    ``obj.last_tick_time``，1h 实例会被每分钟一次的心跳不断刷新，导致
+    ``SELECT FOR UPDATE`` 内的半根窗判定（30 分钟）永远认为"刚跑过"，策略彻底停摆。
+    Background: ``_claim_tick(touch=False)`` leaves the column alone, but if the persistence
+    step still writes ``obj.last_tick_time`` unconditionally, a 1h instance gets refreshed every
+    minute, so the half-bar window inside the row lock always looks "just ran" and the strategy
+    stops executing entirely.
+    """
+    row = _Row(datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=50), interval="1h")  # 50 分钟前跑过信号 | Signal ran 50m ago
+    before = row.last_tick_time  # 记录原值 | Remember the original
+    runtime_service._touch_tick_time(row, risk_only=True)  # 心跳持久化 | Persist a heartbeat
+    assert row.last_tick_time == before, "风控心跳不得改写占位时间 | A heartbeat must not touch the claim column"
+    _, ok_signal = asyncio.run(runtime_service._claim_tick(1, _FakeSession(row)))  # 随后的信号 tick | The following signal tick
+    assert ok_signal is True, "心跳之后信号 tick 必须仍能抢到 | The signal tick must still claim after heartbeats"
+
+
+def test_risk_heartbeat_persist_updates_clock_for_signal_tick() -> None:  # 信号 tick 仍要写占位 | Signal ticks still write the claim
+    """信号周期 tick 持久化后必须刷新占位时间，保证幂等窗生效 | Signal ticks must refresh the claim so the idempotency window works."""
+    row = _Row(datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=3), interval="1h")  # 三小时前 | Three hours ago
+    before = row.last_tick_time  # 记录原值 | Remember the original
+    runtime_service._touch_tick_time(row, risk_only=False)  # 信号 tick 持久化 | Persist a signal tick
+    assert row.last_tick_time != before, "信号 tick 必须刷新占位时间 | A signal tick must refresh the claim"
+    _, ok_again = asyncio.run(runtime_service._claim_tick(1, _FakeSession(row)))  # 紧接着再来一次 | An immediate second run
+    assert ok_again is False, "刚跑过的信号 tick 应被半根窗挡住 | The half-bar window must reject the duplicate"
+
+
+def test_stop_loss_depth_shortfall_is_recorded(monkeypatch: pytest.MonkeyPatch) -> None:  # 止损被深度截断要留痕 | A truncated stop must be surfaced
+    """止损单被盘口深度截断时，剩余仓位必须记录到 unfilled，而不是静默留在账上 | Depth-capped stops must be recorded, not silently left open."""
+    name = _patch_strategy(monkeypatch, StopLoss5)  # 绑定测试策略 | Bind the test strategy
+    ledger = _long_ledger(qty=10.0)  # 多头 10 个 | Ten units long
+    candles = _candles([100.0, 100.0, 90.0], start=datetime.now(UTC) - timedelta(hours=5))  # 末根收盘 90 跌破止损 95 | The last close breaches the 95 stop
+    tick = asyncio.run(  # 驱动一次 tick | Drive one tick
+        run_tick(  # 统一运行时 | Unified runtime
+            mode="paper",  # 模拟盘 | Paper mode
+            executor=PaperExecutor(ledger, fee_rate=0.0),  # 本地撮合 | Local fills
+            ledger=ledger,  # 账本 | Ledger
+            strategy_name=name,  # 策略名 | Strategy name
+            symbol="BTC/USDT",  # 交易对 | Symbol
+            interval="1h",  # 周期 | Interval
+            candles=candles,  # 已收盘窗口 | Closed window
+            execution_price=90.0,  # 破位后市价 90 | Market price after the breach
+            depth=(1.0, 1000.0),  # 买一只有 1 个 | Only one unit on the bid
+        )
+    )
+    stops = [fill for fill in tick.fills if fill.get("reason") == "stop_loss"]  # 取止损成交 | Collect stop fills
+    assert stops, "止损必须触发 | The stop must trigger"
+    assert stops[0]["qty"] == pytest.approx(1.0), "只能成交买一挂着的 1 个 | Only the bid's single unit fills"
+    assert any(item.get("reason") == "stop_loss" for item in tick.unfilled), "剩余 9 个必须出现在 unfilled 里 | The remaining nine must be reported"
+    assert ledger.long_qty == pytest.approx(9.0), "未平部分仍在账上，用户必须能看见 | The unfilled remainder stays open and visible"
+
+
+def test_stop_loss_mid_fallback_hits_the_bid(monkeypatch: pytest.MonkeyPatch) -> None:  # 止损也要吃买一 | Stops pay the half-spread too
+    """中间价口径下卖出止损应压到买一，与策略单同一套点差规则 | Mid-based stops must hit the bid like strategy orders do."""
+    name = _patch_strategy(monkeypatch, StopLoss5)  # 绑定测试策略 | Bind the test strategy
+    ledger = _long_ledger(qty=10.0)  # 多头 10 个 | Ten units long
+    candles = _candles([100.0, 100.0, 94.0], start=datetime.now(UTC) - timedelta(hours=5))  # 末根跌破止损 | The last bar breaches the stop
+    tick = asyncio.run(  # 驱动一次 tick | Drive one tick
+        run_tick(  # 统一运行时 | Unified runtime
+            mode="paper",  # 模拟盘 | Paper mode
+            executor=PaperExecutor(ledger, fee_rate=0.0),  # 本地撮合 | Local fills
+            ledger=ledger,  # 账本 | Ledger
+            strategy_name=name,  # 策略名 | Strategy name
+            symbol="BTC/USDT",  # 交易对 | Symbol
+            interval="1h",  # 周期 | Interval
+            candles=candles,  # 已收盘窗口 | Closed window
+            execution_price=100.0,  # 中间价 100 | Mid price 100
+            fill_basis_hint="mid_fallback",  # 中间价口径 | Mid-based basis
+            spread_ratio=0.001,  # 半价差 10bp | Ten basis points
+            depth=(1000.0, 1000.0),  # 深度充足 | Plenty of depth
+        )
+    )
+    stops = [fill for fill in tick.fills if fill.get("reason") == "stop_loss"]  # 取止损成交 | Collect stop fills
+    assert stops, "止损必须触发 | The stop must trigger"
+    assert stops[0]["price"] == pytest.approx(100.0 * 0.999), "卖出应打到买一（中间价减半价差）| Sells hit the bid, i.e. the mid minus the half-spread"
+
+
+def test_backtest_drops_multiple_unclosed_trailing_bars() -> None:  # 连续多根未收盘都要丢 | Every trailing unclosed bar is dropped
+    """数据截断在多根未收盘处时，全部丢弃而不是只丢最后一根 | Truncated data must drop every unclosed tail bar."""
+    # 注入固定参考时刻，避免用例随真实时钟漂移 | Inject a fixed clock so this test never drifts
+    fixed = datetime(2024, 1, 2, 0, 0, tzinfo=UTC)  # 固定整点 | Fixed hour boundary
+    closed = _candles([100.0 + index for index in range(4)], start=fixed - timedelta(hours=5))  # 4 根 1h 已收盘 | Four closed hourly bars
+    # 场景：数据文件是 1m 粒度，但回测按 1h 周期判定。这 5 根 minute bar 的开盘时间在
+    # fixed-5min..fixed-1min，按 1h 计算的收盘时刻都晚于 fixed，因此全部尚未收盘。
+    # Scenario: minute-grained rows evaluated with an hourly interval; each closes after `fixed`.
+    forming = [  # 连续五根按 1h 判定未收盘的行 | Five rows still forming under the 1h interval
+        Candle((fixed - timedelta(minutes=5 - index)).isoformat(), 104.0 + index, 105.0 + index, 103.0 + index, 104.0 + index, 1)
+        for index in range(5)
+    ]
+    result = run_backtest(closed + forming, Hold, mode="event", symbol="X", interval="1h", now=fixed)  # 跑回测 | Run the backtest
+    assert result["candle_count"] == 4  # 五根都被丢弃 | All five dropped
+    assert result["dropped_unclosed"] == 5  # 计数如实 | Count reported honestly
+
+
+def test_backtest_rejects_future_dated_data() -> None:  # 未来数据直接报错 | Future-dated data raises
+    """整段数据晚于当前时钟（时区错乱）时应报业务异常，而不是当已收盘 K 线用 | Future-dated data must raise, not be used as closed bars."""
+    fixed = datetime(2024, 1, 2, 0, 0, tzinfo=UTC)  # 固定参考时刻 | Fixed reference instant
+    candles = _candles([100.0 + index for index in range(4)], start=fixed + timedelta(hours=2))  # 全部在未来 | Everything in the future
+    with pytest.raises(CustomException):  # 必须显式失败 | Must fail loudly
+        run_backtest(candles, Hold, mode="event", symbol="X", interval="1h", now=fixed)  # 跑回测 | Run the backtest
+
+
+def test_paper_rejects_orders_below_min_notional(monkeypatch: pytest.MonkeyPatch) -> None:  # 模拟盘也校验最小名义额 | Paper mode honours the minimum notional
+    """min_notional 高于订单名义额时模拟盘不成交，并记 unfilled | Paper mode must reject dust like the venue does."""
+    name = _patch_strategy(monkeypatch, ExplicitPriceBuy)  # 绑定测试策略 | Bind the test strategy
+    ledger = AccountLedger(10000.0, fee_rate=0.0, slippage=0.0)  # 构造账本 | Build the ledger
+    candles = _candles([100.0, 100.0], start=datetime.now(UTC) - timedelta(hours=5))  # 两根已收盘 | Two closed bars
+    tick = asyncio.run(  # 驱动一次 tick | Drive one tick
+        run_tick(  # 统一运行时 | Unified runtime
+            mode="paper",  # 模拟盘 | Paper mode
+            executor=PaperExecutor(ledger, fee_rate=0.0),  # 本地撮合 | Local fills
+            ledger=ledger,  # 账本 | Ledger
+            strategy_name=name,  # 策略名 | Strategy name
+            symbol="BTC/USDT",  # 交易对 | Symbol
+            interval="1h",  # 周期 | Interval
+            candles=candles,  # 已收盘窗口 | Closed window
+            execution_price=100.0,  # 成交价 100 | Fill price 100
+            depth=(1000.0, 1000.0),  # 深度充足 | Plenty of depth
+            min_notional=1e9,  # 交易所下限极高 | A huge venue minimum
+        )
+    )
+    assert not tick.fills, "低于最小名义额不得成交 | Dust must not fill"
+    assert any(item.get("reason") == "min_notional" for item in tick.unfilled), "原因必须可见 | The reason must be visible"
+    assert ledger.long_qty == pytest.approx(0.0), "账本不得建仓 | No position may be opened"
+
+
+def test_risk_heartbeat_does_not_raise_equity_peak(monkeypatch: pytest.MonkeyPatch) -> None:  # 心跳不抬净值峰值 | Heartbeats must not lift the equity peak
+    """盘中风控心跳只更新止损极值，不抬 peak_equity，回撤熔断口径与回测一致 | Heartbeats leave the equity peak alone."""
+    name = _patch_strategy(monkeypatch, Hold)  # 用不交易的策略 | Use a strategy that never trades
+    ledger = _long_ledger(qty=10.0, price=100.0)  # 多头 10 个 | Ten units long
+    ledger.peak_equity = 10000.0  # 固定峰值，便于观察 | Pin the peak so the change is visible
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)  # 当前整点 | Current hour start
+    risk_candles = _candles([100.0, 200.0], start=now - timedelta(hours=3))  # 末根收盘 200 | The last bar closes at 200
+    asyncio.run(  # 盘中风控心跳 | Intra-bar risk heartbeat
+        run_tick(  # 统一运行时 | Unified runtime
+            mode="paper",  # 模拟盘 | Paper mode
+            executor=PaperExecutor(ledger, fee_rate=0.0),  # 本地撮合 | Local fills
+            ledger=ledger,  # 账本 | Ledger
+            strategy_name=name,  # 策略名 | Strategy name
+            symbol="BTC/USDT",  # 交易对 | Symbol
+            interval="1h",  # 周期 | Interval
+            candles=risk_candles,  # 窗口 | Window
+            execution_price=200.0,  # 价格 200 | Price 200
+            risk_only=True,  # 只跑风控 | Risk only
+        )
+    )
+    assert ledger.peak_equity == pytest.approx(10000.0), "心跳不得抬高净值峰值 | A heartbeat must not lift the peak"
+    assert ledger.long_peak == pytest.approx(200.0 * 1.02), "移动止损极值仍应更新 | Trailing extremes still update"
+    asyncio.run(  # 信号周期 tick | A signal-period tick
+        run_tick(  # 统一运行时 | Unified runtime
+            mode="paper",  # 模拟盘 | Paper mode
+            executor=PaperExecutor(ledger, fee_rate=0.0),  # 本地撮合 | Local fills
+            ledger=ledger,  # 账本 | Ledger
+            strategy_name=name,  # 策略名 | Strategy name
+            symbol="BTC/USDT",  # 交易对 | Symbol
+            interval="1h",  # 周期 | Interval
+            candles=risk_candles,  # 窗口 | Window
+            execution_price=200.0,  # 价格 200 | Price 200
+        )
+    )
+    assert ledger.peak_equity > 10000.0, "信号 tick 必须抬高峰值 | Signal ticks must lift the peak"
+
+
+def test_risk_heartbeat_throttle_survives_new_process() -> None:  # 心跳节流跨副本生效 | Heartbeat throttling works across replicas
+    """另一个副本（进程内字典为空）也必须看到上一次心跳，避免重复发平仓单 | A second replica must see the previous heartbeat."""
+    recent = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=5)  # 5 秒前刚跑过心跳 | A heartbeat 5s ago
+    row = _Row(datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=50), interval="1h", last_risk_time=recent)  # 数据库里已有心跳 | The DB already has it
+    _, ok = asyncio.run(runtime_service._claim_tick(1, _FakeSession(row), touch=False))  # 新副本尝试心跳 | The new replica tries
+    assert ok is False, "数据库中的心跳时间必须挡住重复心跳 | The persisted heartbeat must throttle the duplicate"
+    stale = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=120)  # 两分钟前 | Two minutes ago
+    row.last_risk_time = stale  # 超出 30 秒窗 | Outside the 30s window
+    _, ok_again = asyncio.run(runtime_service._claim_tick(1, _FakeSession(row), touch=False))  # 再次尝试 | Try again
+    assert ok_again is True, "超过窗口后允许再来一次 | Allowed once the window elapsed"
+    assert row.last_risk_time is not None and row.last_risk_time > stale, "必须写回新的心跳时间 | The new heartbeat must be persisted"
+
+
+def test_symbol_rule_parser_reads_notional_and_lot_filters() -> None:  # 解析交易所过滤器 | Parse venue filters
+    """exchangeInfo 的 MIN_NOTIONAL/LOT_SIZE/MARKET_LOT_SIZE 必须被正确解析 | The parser must read the order-gating filters."""
+    from app.modules.quant.execution.exchange import _parse_symbol_item  # 局部导入，避免污染测试头部 | Local import
+
+    item = {  # 构造一个 exchangeInfo 条目 | Build one exchangeInfo entry
+        "baseAsset": "BTC",  # 基础资产 | Base asset
+        "quoteAsset": "USDT",  # 计价资产 | Quote asset
+        "filters": [  # 过滤器列表 | Filter list
+            {"filterType": "MIN_NOTIONAL", "minNotional": "10"},  # 最小名义额 10 USDT | 10 USDT minimum
+            {"filterType": "LOT_SIZE", "stepSize": "0.00001", "minQty": "0.0001", "maxQty": "100"},  # 数量规则 | Lot rules
+            {"filterType": "MARKET_LOT_SIZE", "stepSize": "0.00001", "minQty": "0.0002", "maxQty": "50"},  # 市价规则 | Market rules
+        ],
+    }
+    rules = _parse_symbol_item(item)  # 解析 | Parse
+    assert rules["min_notional"] == pytest.approx(10.0)  # 最小名义额 | Minimum notional
+    assert rules["market_min_qty"] == pytest.approx(0.0002)  # 市价最小量优先用于市价单 | Market minimum
+    assert rules["quote_asset"] == "USDT"  # 计价资产 | Quote asset
+
+
+def test_symbol_rules_degrades_to_unconstrained_on_network_error(monkeypatch: pytest.MonkeyPatch) -> None:  # 查询失败不阻断交易 | A failed lookup must not block trading
+    """规则接口不可用时返回"无约束"并短时缓存，而不是抛异常 | Degrade to unconstrained instead of raising."""
+    import httpx  # 导入 httpx 构造异常 | Import httpx to raise the error
+
+    from app.modules.quant.execution import exchange as exchange_module  # 导入模块以替换客户端 | Import the module to patch
+
+    exchange_module._RULES_CACHE.clear()  # 清掉缓存，保证走查询分支 | Clear the cache so the lookup runs
+
+    class _BoomClient:  # 必定失败的客户端 | A client that always fails
+        """模拟网络不可用 | Simulates an unreachable network."""
+
+        def __init__(self, *args: object, **kwargs: object) -> None:  # 构造即失败 | Fail on construction
+            """抛出连接错误 | Raise a connection error."""
+            raise httpx.ConnectError("boom")  # 连接失败 | Connection failure
+
+    monkeypatch.setattr(exchange_module.httpx, "AsyncClient", _BoomClient)  # 替换异步客户端 | Patch the async client
+    rules = asyncio.run(exchange_module.symbol_rules("BTC/USDT"))  # 查询 | Query
+    assert rules["min_notional"] == 0.0, "失败时退化为无约束 | Degrades to unconstrained"
+    assert exchange_module._RULES_CACHE, "失败结果应短时缓存，避免每 tick 重试 | Failures are cached briefly"
+    exchange_module._RULES_CACHE.clear()  # 清理，避免影响其他用例 | Clean up for other tests
