@@ -120,6 +120,10 @@ WEB3_MENU = _directory(  # 构造 web3-量化菜单树 | Build the web3 Quant me
               "module_quant/paper/index", "ri:play-circle-line", 4, "虚拟资金实时策略验证"),  # 模拟盘页面：组件、图标、排序、描述 | Paper page: component, icon, order, description
         _page("web3-量化-实盘", "module_quant:live:query", "QuantLive", "live",  # 实盘页面：名称、权限、路由名、路径 | Live page: name, permission, route name, path
               "module_quant/live/index", "ri:exchange-2-line", 5, "币安实盘交易（默认 dry-run）"),  # 实盘页面：组件、图标、排序、描述 | Live page: component, icon, order, description
+        _page("web3-量化-密钥", "module_quant:key:query", "QuantKey", "key",  # 密钥管理页面 | Credential management page
+              "module_quant/key/index", "ri:key-2-line", 6, "交易所密钥管理（加密存储）"),  # 密钥页面：组件、图标、排序、描述 | Key page: component, icon, order, description
+        _page("web3-量化-持仓", "module_quant:position:query", "QuantPosition", "position",  # 持仓管理页面 | Position management page
+              "module_quant/position/index", "ri:briefcase-2-line", 7, "持仓登记与校正"),  # 持仓页面：组件、图标、排序、描述 | Position page: component, icon, order, description
     ],  # 子页面列表结束 | End of the child page list
 )  # web3-量化菜单树构造结束 | End of the web3 Quant menu tree
 
@@ -153,6 +157,8 @@ def _market_menu(name, route_name, route_path, icon, order, description, prefix,
         ("backtest", "ri:line-chart-line", "策略回测配置与结果查看"),  # 回测页面规格 | Backtest page spec
         ("paper", "ri:play-circle-line", "虚拟资金实时策略验证"),  # 模拟盘页面规格 | Paper page spec
         ("live", "ri:exchange-2-line", "实盘交易（可插拔柜台适配层）"),  # 实盘页面规格 | Live page spec
+        ("key", "ri:key-2-line", "交易所密钥管理（加密存储）"),  # 密钥管理页面规格 | Credential page spec
+        ("position", "ri:briefcase-2-line", "持仓登记与校正"),  # 持仓管理页面规格 | Position page spec
     ]  # 子页面规格列表结束 | End of the child page spec list
     children = [  # 由规格列表推导生成子页面节点 | Build child page nodes from the spec list comprehension
         _page(f"{name}-{key}", f"{perm_prefix}:{key}:query", f"{prefix}{key.title()}", key,  # 页面名称、权限、路由名与路径 | Page name, permission, route name and path
